@@ -72,6 +72,11 @@ type resumeStore struct {
 	dir       string
 	retention time.Duration // positions older than this are cleaned up, 0 keeps them for ever
 
+	// files serialises reading the record files against replacing and
+	// removing them: on Windows a file can't be renamed over or removed
+	// while it is open
+	files sync.RWMutex
+
 	mu          sync.Mutex // protects lastCleanup
 	lastCleanup time.Time
 }
@@ -95,7 +100,9 @@ func resumeKey(configString, remote string) string {
 // load returns the record stored under key. The error satisfies
 // os.ErrNotExist if there is none.
 func (s *resumeStore) load(key string) (*resumeRecord, error) {
+	s.files.RLock()
 	data, err := os.ReadFile(filepath.Join(s.dir, key))
+	s.files.RUnlock()
 	if err != nil {
 		return nil, err
 	}
@@ -132,13 +139,17 @@ func (s *resumeStore) save(key string, rec *resumeRecord) (err error) {
 	if err != nil {
 		return err
 	}
+	s.files.Lock()
+	defer s.files.Unlock()
 	return os.Rename(tmp.Name(), filepath.Join(s.dir, key))
 }
 
 // clear removes the record stored under key. It isn't an error if there
 // is none.
 func (s *resumeStore) clear(key string) error {
+	s.files.Lock()
 	err := os.Remove(filepath.Join(s.dir, key))
+	s.files.Unlock()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

@@ -475,13 +475,16 @@ cartelle). Correggere `vfs.CreateZip` sarebbe una modifica a un file upstream, v
 
 ### Con upstream rclone
 
-Il fork vive su un ramo (`feat/webdav-frontend`) che segue `master` di upstream. Per aggiornarlo, con
-l'albero di lavoro pulito (i file non tracciati sono ammessi):
+Il fork vive sul ramo `main` di https://github.com/manprint/rclone (fork GitHub di rclone/rclone), che
+segue `master` di upstream. I remote sono `origin` = il fork e `upstream` = rclone/rclone. Per aggiornarlo,
+con l'albero di lavoro pulito (i file non tracciati sono ammessi):
 
 ```bash
-git remote add upstream https://github.com/rclone/rclone.git   # una volta sola
-git config rerere.enabled true                                 # una volta sola, vedi sotto
-webui/scripts/sync-upstream.sh
+git clone https://github.com/manprint/rclone.git && cd rclone       # una volta sola
+git remote add upstream https://github.com/rclone/rclone.git        # una volta sola
+git config rerere.enabled true                                      # una volta sola, vedi sotto
+webui/scripts/sync-upstream.sh                                      # merge di upstream/master in main
+git push origin main                                                # quando lo script stampa OK
 ```
 
 Lo script, che non fa mai push, esegue nell'ordine: `git fetch`, `git merge --no-edit upstream/master` con
@@ -506,7 +509,9 @@ middleware o delle opzioni di `libhttp.NewServer`: va adattato il glue, non gli 
 
 Gli asset (`assets/index.html`, `index.js`, `index.css`, `favicon.ico`) sono copiati byte per byte da
 superdufs; `overlay/overlay.js` contiene le sole correzioni del fork e viene caricato dopo `index.js`.
-`assets/SOURCE` registra repository, commit e sha256 degli asset, senza credenziali.
+`assets/SOURCE` registra repository, commit e sha256 degli asset. Come repository scrive
+"superdufs, fork of https://github.com/sigoden/dufs" e non l'URL della copia locale, che può stare su un
+server privato; `SUPERDUFS_REPO=<url pubblico>` lo sostituisce.
 
 Per aggiornare gli asset da una copia locale di superdufs:
 
@@ -577,7 +582,7 @@ OUT=/usr/local/bin/rclone webui/scripts/build.sh
 
 Compila con `go build -ldflags "-s -X github.com/rclone/rclone/fs.Version=<git describe>-webui"`, come il
 `Makefile` upstream ma con il suffisso `-webui`: `rclone version` mostra per esempio
-`rclone v1.75.0-556-g88317de3f-webui`, così si riconosce il binario del fork. `go build` semplice funziona
+`rclone v1.75.0-556-g96508039e-webui`, così si riconosce il binario del fork. `go build` semplice funziona
 ugualmente, solo con la versione di sviluppo.
 
 ### Con `just` e Docker

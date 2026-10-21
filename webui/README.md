@@ -39,6 +39,52 @@ con `--template` oppure con `--disable-dir-list`. Ogni flag ha la corrispondente
 Le funzioni associate a ciascun flag sono introdotte dalle fasi successive del piano: i flag sono già
 registrati, ma finché la funzione non esiste il valore non ha effetto.
 
+## Interfaccia web
+
+Un browser che apre una cartella del server (`http://host:porta/`, `http://host:porta/cartella/`) riceve la
+pagina superdufs con il contenuto reale della VFS: cartelle prima dei file, nomi in ordine naturale
+(`a2` prima di `a10`, senza distinguere maiuscole), dimensione e data di modifica. L'ordinamento si cambia
+con `?sort=name|mtime|size` e `?order=desc`; `order=desc` senza `sort` è ignorato e, quando c'è, inverte
+l'intero elenco, cartelle comprese. La stessa lista in JSON si ottiene con `?json`, con qualsiasi client
+e senza intestazione `Accept`. I dati incorporati nella pagina e quelli di `?json` sono identici.
+
+Le pagine HTML escono con `Cache-Control: no-cache`, `X-Content-Type-Options: nosniff` e una
+`Content-Security-Policy` che vieta frame di altri siti, `object` e `base` esterni. Gli asset (`index.js`,
+`index.css`, `favicon.ico`, `overlay.js`) sono serviti sotto `/<baseurl>/__webui_<hash>__/` senza
+autenticazione, con cache immutabile: l'hash cambia a ogni modifica degli asset.
+
+### Fallback per la riga di comando
+
+La pagina è servita solo se la richiesta è un `GET` o `HEAD` che accetta `text/html` (intestazione
+`Accept`) **e** il suo `User-Agent` non inizia per `lynx/`, `w3m/`, `links `, `elinks/`, `curl/`, `wget/`,
+`httpie/`, `aria2/`, `rclone/` (confronto senza distinzione di maiuscole). Tutte le altre richieste
+passano al server WebDAV upstream: `curl`, `wget`, il backend `webdav` di rclone e i client WebDAV non
+vedono differenze, con elenco HTML upstream, `PROPFIND`, `PUT` e il resto invariati. `?download=zip`
+resta gestito dall'upstream. Le richieste che non sono `GET`/`HEAD` non sono toccate.
+
+### Cartelle senza slash finale
+
+Il browser che apre `/cartella` (senza `/` finale) è reindirizzato con `302` a `/cartella/`, mantenendo la
+query e il prefisso di `--baseurl`: la pagina risolve i link relativi rispetto all'URL corrente e senza
+slash puntavano alla cartella superiore. I client che non sono browser continuano a ricevere la risposta
+upstream (`405` per un `GET` su una cartella senza slash). Se il percorso non esiste o è un file, la
+richiesta passa all'upstream.
+
+### Flag che influenzano la pagina
+
+- `--read-only`: la pagina nasconde upload e cancellazione (`allow_upload` e `allow_delete` falsi).
+- `--disable-zip`: la pagina non offre lo scarico come archivio (`allow_archive` falso).
+- `--no-modtime`: le date di modifica sono `0` e la pagina lascia vuota la colonna.
+- `--template`: l'interfaccia resta spenta e si ottiene il comportamento upstream con il template scelto.
+- `--disable-dir-list`: l'interfaccia resta spenta.
+- `--webui=false`: l'interfaccia resta spenta.
+- `--webui-dir-count`: la colonna dimensione delle cartelle mostra il numero di elementi (al massimo 1000)
+  invece di un trattino. Costa un elenco di ogni sottocartella a ogni apertura della pagina, quindi è
+  spento per default; se una sottocartella non si può leggere resta il trattino.
+- `--webui-search`, `--webui-disk-stats`, `--webui-upload-settings`: controllano soltanto i campi
+  `allow_search`, `enable_data_stats` e `show_concurrent_uploads_settings` dei dati della pagina; le
+  funzioni corrispondenti arrivano nelle fasi successive.
+
 ## Sincronizzazione
 
 Gli asset (`assets/index.html`, `index.js`, `index.css`, `favicon.ico`) sono copiati byte per byte da

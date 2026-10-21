@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 0.1.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 0.2.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -98,10 +98,10 @@ segue il prefisso di directory upstream per i propri commit di unità).
 - Assigned: —; supervisor: Opus (agent-1)
 - File / unit heading: —
 - Current step: none
-- Next action: aprire 0.2 (phase_01.md §0.2) e delegarla a Sonnet.
-- Next eligible plan unit: 0.2 / phase_01.md
-- Unit base: commit di 0.1 (unit:0.1:1); branch: feat/webdav-frontend; owned changes: —
-- Repo state: pulito salvo `.serena/` (estraneo, untracked)
+- Next action: aprire P0: G-PHASE, G-LINT, G-FOOT e review Opus della fase 0.
+- Next eligible plan unit: P0 / phase_01.md
+- Unit base: commit di 0.2 (unit:0.2:1); branch: feat/webdav-frontend; owned changes: —
+- Repo state: pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -215,6 +215,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 |------|--------------|---------------|-------|---------|-----------------|--------|
 | plan | 001 / 1 | 1 | Opus (agent-1) | `docs/plans/001_plan-WebdavSuperUI/*` | validazione READY §2 | unit:0.1:1 (incluso) |
 | sub-phase | 0.1 / 1 | 1 | Sonnet (agent-2) | `webui/{options,ui,assets}.go`, `webui/ui_test.go`, `webui/assets/*`, `webui/overlay/overlay.js`, `webui/scripts/{check-footprint,sync-assets}.sh`, `webui/README.md`, `cmd/serve/webdav/webdav_webui{,_test}.go`, 3 righe in `webdav.go`. Extra accettato da Opus: `webui.AssetsPrefix()` esportata per i test del package webdav; `New` rifiuta `cfg.BaseURL == nil`; `TestWebUIFlagsRegistered` verifica il default dichiarato in `OptionsInfo` (il `DefValue` del flag segue `RCLONE_WEBUI`) | G-U01, G-BASE, run `RCLONE_WEBUI=false`, G-FOOT, G-LINT pass; cmp asset ok; controllo diff Opus | unit:0.1:1 |
+| sub-phase | 0.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/data.go`, `webui/listing.go`, `webui/data_test.go`; `webui/ui.go` (Handler → serveListing), `webui/README.md` (Interfaccia web), `cmd/serve/webdav/webdav_webui_test.go` (10 test + `startWebUIDir`). Deviazioni accettate: titolo del template upstream di default è `<title>/</title>` (non "Directory listing of /", che è del template di test); `naturalLess("x1","x01")` true; disable-zip/no-modtime come subtest di `TestWebUIListingJSON`; redirect costruito con `url.URL` da `remote` (niente open redirect) | G-U02a 2/2, G-U02b 12/12 (verificati da Opus), suite e lint verdi (worker) | unit:0.2:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -245,6 +246,8 @@ none
 | run `RCLONE_WEBUI=false` | `RCLONE_WEBUI=false go test -count=1 ./cmd/serve/webdav/` | pass | ok 39s | working tree 0.1 | 2026-10-21 |
 | G-FOOT | vedi §3 | pass | `footprint OK` (worker ha verificato anche i casi negativi) | working tree 0.1 | 2026-10-21 |
 | G-LINT | vedi §3 | pass | 0 issues | working tree 0.1 | 2026-10-21 |
+| G-U02a | vedi §3 | pass | 2 RUN/PASS | working tree 0.2 | 2026-10-21 |
+| G-U02b | vedi §3 | pass | 12 top-level PASS incl. TestWebUIUpstreamSuiteEnabled | working tree 0.2 | 2026-10-21 |
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
@@ -267,7 +270,7 @@ none
 | ID | Phase file | Depends on | Status | Attempt | Evidence / reason |
 |----|------------|------------|--------|---------|-------------------|
 | 0.1 | phase_01.md | none | DONE | 1 | G-U01, G-FOOT, G-LINT, G-BASE pass; unit:0.1:1 |
-| 0.2 | phase_01.md | 0.1 | TODO | 1 | — |
+| 0.2 | phase_01.md | 0.1 | DONE | 1 | G-U02a 2/2, G-U02b 12/12; unit:0.2:1 |
 | 1.1 | phase_02.md | P0 | TODO | 1 | — |
 | 1.2 | phase_02.md | 1.1 | TODO | 1 | — |
 | 1.3 | phase_02.md | 1.2 | TODO | 1 | — |
@@ -296,8 +299,8 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | ID/name | Owning unit | Gate | Status | Evidence |
 |---------|-------------|------|--------|----------|
 | TestAssetsMatchSource, TestAssetsServed, TestOverlayInjected, TestWebUIFlagsRegistered, TestWebUIAssetsReachable | 0.1 | G-U01 | PASS | §7 |
-| TestNaturalLess, TestSortPathItems | 0.2 | G-U02a | TODO | — |
-| TestWebUIListingHTML, TestWebUIListingJSON, TestWebUICLIFallback, TestWebUIDirRedirect, TestWebUIReadOnly, TestWebUIDirCount, TestWebUIDisabledByTemplate, TestWebUIDisabledFlag, TestWebUIAuthUser, TestWebUIUpstreamSuiteEnabled | 0.2 | G-U02b | TODO | — |
+| TestNaturalLess, TestSortPathItems | 0.2 | G-U02a | PASS | §7 |
+| TestWebUIListingHTML, TestWebUIListingJSON, TestWebUICLIFallback, TestWebUIDirRedirect, TestWebUIReadOnly, TestWebUIDirCount, TestWebUIDisabledByTemplate, TestWebUIDisabledFlag, TestWebUIAuthUser, TestWebUIUpstreamSuiteEnabled | 0.2 | G-U02b | PASS | §7 |
 | TestDestRemote, TestWebUICheckAuthLogout, TestWebUIPutCreatesParents, TestPutIncompleteRemovedNoCache, TestPatchAppend, TestMoveGuardBrowser, TestWebUIDavClientUnchanged, TestWebUIPathTraversal | 1.1 | G-U11 | TODO | — |
 | TestIsText, TestWebUIEditPage, TestFileCSPSandbox | 1.2 | G-U12 | TODO | — |
 | TestResumeStoreRoundTrip, TestResumeKeyDistinct, TestResumeCleanup, TestIsMedia, TestWebUIResumeEndpoints | 1.3 | G-U13a/b | TODO | — |
@@ -311,7 +314,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | Document/sections | Owning unit | Status | Evidence |
 |-------------------|-------------|--------|----------|
 | webui/README.md — Flag, Sincronizzazione | 0.1 | DONE | sezioni presenti (nota temporanea "funzioni introdotte dalle fasi successive" da rimuovere in 4.2) |
-| webui/README.md — Interfaccia web | 0.2 | TODO | — |
+| webui/README.md — Interfaccia web | 0.2 | DONE | sezione presente |
 | webui/README.md — Ripresa riproduzione / Comportamento client WebDAV | 1.3 / P1 | TODO | — |
 | webui/README.md — Ricerca e statistiche | 2.2 | TODO | — |
 | webui/README.md — Link di download e link pubblici | 3.2 | TODO | — |

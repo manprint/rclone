@@ -81,6 +81,17 @@ Il tag avvia build, test, immagini e release. `rclone version` mostra `rclone v1
 si chiamano come quelli upstream con quella versione (`rclone-v1.76.0-webui.1-linux-amd64.zip`, `.deb`,
 `.rpm`, …). Per una nuova release sullo stesso upstream si usa `-webui.2`.
 
+Il job `release` parte solo se tutti i job di build e test sono verdi. A volte GitHub non assegna un runner
+macOS e cancella il job con "The job was not acquired by Runner of type hosted": è un limite di capacità di
+GitHub, non un errore del codice, ma senza quel job la release non parte. Si rilanciano i job falliti o
+cancellati, insieme a quelli che ne dipendono; se `release` restasse saltato, si rilancia l'intero run:
+
+```bash
+gh run list --repo manprint/rclone --workflow fork-build.yml --limit 3   # id del run del tag
+gh run rerun <id> --failed --repo manprint/rclone
+gh run rerun <id> --repo manprint/rclone                                # solo se serve
+```
+
 Prima di costruire i binari di un tag, `fork-build.yml` controlla che su HEAD ci sia un solo tag, nel
 formato `vX.Y.Z-webui.N`, che `VERSION` valga `vX.Y.Z` e che `vX.Y.Z` sia un tag upstream: il Makefile
 prende la versione dal tag su HEAD e calcola l'ultima release (`LAST_TAG`) dal tag di `VERSION`. Il tag

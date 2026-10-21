@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — correzione V001-C1 e chiusura P3 / 2.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — task T-A001 (justfile e Docker).
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -89,19 +89,24 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: execute verify — correzioni del report V001 (richiesta utente 2026-10-21: "fixa le cose che hai trovato"); V001-F2/F3 già FIXED nello stato, resta V001-F1 → C1
-- Scope result: COMPLETE (V001-F1 FIXED da V001-C1, fase 3 rivalidata da P3 / 2)
-- Type: phase-close
-- ID / attempt: P3 / 2
-- Status: CLOSED (unit:P3:2)
-- Intent: `tokenDownload` e `publicDownload` trattengono la VFS con `Config.HoldVFS` (via `u.hold`) mentre scrivono la risposta; test `TestPreAuthHoldsVFS`.
-- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1) — review del diff
-- File / unit heading: verify/verify_001_2026-10-21.md — "C1 — Trattenere la VFS nei download serviti prima dell'autenticazione"
-- Current step: chiusa
-- Next action: nessuna nel piano; audit V001 senza finding aperti.
+- Active scope: task T-A001 — richiesta utente 2026-10-21: "Mi scrivi un justfile alla fine per buildare la nuova immagine rclone (amd64/arm64). Nel justfile, se possibile, con docker, anche un recipe per buildare per macos e windows e linux il nuovo binario."
+- Scope result: COMPLETE
+- Type: task
+- ID / attempt: T-A001 / 1
+- Status: CLOSED (unit:T-A001:1)
+- Intent: `webui/justfile` con recipe per l'immagine Docker multi-arch (linux/amd64, linux/arm64) e per i binari linux/darwin/windows (amd64, arm64) compilati in Docker; versione `<git describe>-webui` come `build.sh`.
+- Assigned: Opus (agent-1), implementazione e review
+- Mini-plan:
+  - S1 `webui/docker/Dockerfile` + `webui/docker/Dockerfile.dockerignore` (contesto = radice, `.git` escluso). Stage `build` su `$BUILDPLATFORM` (`golang:${GO_VERSION}-alpine`, `CGO_ENABLED=0`, `GOOS/GOARCH` dal target, ldflags `-s -X …fs.Version=${VERSION}`); stage `binary` (`scratch`, solo il binario); stage `rootfs` su `$BUILDPLATFORM` che installa con `apk --root --arch` i pacchetti runtime dell'immagine upstream (ca-certificates, fuse3, mailcap, tzdata) per l'arch target, senza db apk, più utente/gruppo rclone 1009 e `user_allow_other`; stage finale `alpine:${ALPINE_VERSION}` senza `RUN` (l'host non ha QEMU), stesso ENTRYPOINT/WORKDIR/ENV dell'upstream. Post: nessun file upstream toccato.
+  - S2 `webui/justfile`: `set working-directory := '..'`; variabili `version` (= build.sh), `go_version` (direttiva `go` di go.mod), `image`, `platforms`, `bin_platforms`, `out` = `build/webui` (ignorata da `.gitignore`); recipe `build`, `image`, `image-oci`, `image-push` (registro come parametro, mai eseguito qui), `binaries`, `binary`, `clean`.
+  - S3 verifiche: `just --list`; binari: `file` su 6 piattaforme, `version` linux/amd64 con `-webui`, 18 flag `--webui`, file del proprio utente; immagine amd64: `rclone version`, uid/gid 1009, `fusermount3` setuid, `fuse.conf` con `user_allow_other`, `apk info`, serve + GET `/` con UA browser → UI; arm64: binari `rclone` e `fusermount3` aarch64 (`docker create` + `docker cp`); G-FOOT OK.
+  - S4 README "Build" (italiano), ledger, commit `task(T-A001): …` con trailer PEV.
+- Done: S1–S4 con evidenza in §7; nessun push; nessuna modifica a file upstream.
+- Current step: chiusa (S1–S4)
+- Next action: nessuna
 - Next eligible plan unit: none
-- Unit base: dbe68ed54; branch: feat/webdav-frontend; owned changes: `webui/ui.go`, `webui/token.go`, `webui/public.go`, test in `webui/`
-- Repo state: HEAD dbe68ed54; pulito salvo `.serena/`
+- Unit base: 747586501; branch: feat/webdav-frontend; owned changes: `webui/justfile`, `webui/docker/*`, `webui/README.md`, STATE
+- Repo state: HEAD 747586501; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -234,6 +239,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | audit | V001 / 1 | 1 | Opus (agent-1) | NEW `verify/verify_001_2026-10-21.md`, `verify/index.md`; STATE (intestazione, §1, §4, §6, §11) | G-PHASE (2 run), `-race`, G-SMOKE, G-FOOT, G-LINT, G-U42 pass su `c7d1365b3`; review completa del codice; verdetto PASS WITH FINDINGS | unit:V001:1 |
 | correction | V001-C1 / 1 | 1 | Sonnet (agent-2), review Opus (agent-1) | `webui/ui.go` (commento `Config.HoldVFS`, `func (u *UI) hold`), `webui/token.go` (`tokenDownload` → `u.publicWrap(u.hold(…))`), `webui/public.go` (`publicDownload` idem), NEW `webui/hold_test.go` (`TestPreAuthHoldsVFS`: Held, NoHoldVFS); `verify/index.md`, report V001 (F1 FIXED). Nessuna deviazione | `TestPreAuthHoldsVFS` PASS; mutazione (senza `u.hold(` in `publicDownload`/`tokenDownload`) → FAIL (worker su entrambi, Opus su `public.go`); gofmt, build, vet, lint 0, footprint OK (worker); review Opus: proxy disattiva token e link pubblici (`!IsProxy`) quindi `Provider.HoldVFS` trattiene sempre la VFS fissa; VFS chiusa → 503 | unit:V001-C1:1 |
 | phase-close | P3 / 2 | 1 | Opus (agent-1) | solo STATE.md (rivalidazione della fase 3 riaperta da V001-C1) | G-PHASE (2 run) + `-race` webui, G-LINT 0, G-FOOT ok; review Opus §7 | unit:P3:2 |
+| task | T-A001 / 1 | 1 | Opus (agent-1) | NEW `webui/justfile` (build, image, image-for, image-oci, image-push, binaries, binary, clean), NEW `webui/docker/Dockerfile` (stage build su `$BUILDPLATFORM` con tag `cmount` come le release upstream, binary, rootfs con `apk --root --arch --no-scripts` e solo i pacchetti assenti dalla base, image senza `RUN`), NEW `webui/docker/Dockerfile.dockerignore`; `webui/README.md` (Build → "Con `just` e Docker", tabella del codice). Scelte: tutto sotto `webui/` (footprint invariato, nessun file upstream: `Dockerfile` e `.gitignore` intatti); `go_version` dalla direttiva `go` di go.mod; alpine 3.24; output in `build/webui` (già ignorata); niente QEMU sull'host → nessun `RUN` nello stage finale; macOS senza cgo (niente `rclone mount`, resta `nfsmount`) e Windows senza risorsa di versione, documentati | §7 T-A001; `image-push` non eseguito (pubblica su un registro) | unit:T-A001:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -252,7 +258,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — V001-C1 e P3 / 2 chiuse.
+none — T-A001 chiusa.
 
 ## 7. Verification and reviews
 
@@ -289,6 +295,9 @@ none — V001-C1 e P3 / 2 chiuse.
 | G-FINAL (P4) | vedi §3 | pass | webui ok, webdav 89s, lib/http ok; `RCLONE_WEBUI=false` 88s ok; `-race` webui + webdav ok; smoke OK | 5f5916565 | 2026-10-21 |
 | G-LINT/G-FOOT (P4) | vedi §3 | pass | 0 issues; footprint OK | 5f5916565 | 2026-10-21 |
 | G-U42 | vedi §3 | pass | `bash -n` + shellcheck su 5 script; build.sh versione `-webui`; flag help = README 18/18 | working tree 4.2 | 2026-10-21 |
+| `just binaries` (T-A001) | `just -f webui/justfile binaries` | pass | rieseguito sul Dockerfile committato (tag `cmount`): 6 binari ELF x86-64 e aarch64 statici, Mach-O x86_64 e arm64, PE32+ x86-64 e Aarch64; file del proprio utente; linux/amd64 `rclone v1.75.0-563-g881c2d11b-webui`, 18 flag `--webui`; entrambi gli `.exe` con 196 riferimenti WinFsp. `go list -f {{.GoFiles}}` con `CGO_ENABLED=0 -tags cmount`: darwin → `mount`/`mount2`/`cmount` stub, `nfsmount` reale; windows → `cmount` reale; linux → `mount` e `mount2` reali (README coerente) | 881c2d11b (pre-amend, stesso albero salvo questa riga) | 2026-10-21 |
+| `just image` (T-A001) | `just -f webui/justfile image` | pass | manifest linux/amd64 + linux/arm64 caricato (containerd store); amd64: versione `-webui`, uid/gid rclone 1009, `fusermount3` setuid, `libfuse3.so.4`, `user_allow_other`, mime.types, zoneinfo, CA bundle, `apk info` 16 pacchetti base, WORKDIR `/data`, `XDG_CONFIG_HOME=/config`; serve webdav nel container: browser `/` con `index-data` e `__webui_`, `?json` con il file, UA curl → listing upstream; arm64 (estratti con `docker create` + `docker cp`): `rclone`, `fusermount3`, `libfuse3` aarch64 | working tree T-A001 | 2026-10-21 |
+| altre recipe (T-A001) | `just image-for linux/arm64`, `just image-oci`, `just clean`, `just --list` | pass | immagine arm64 caricata; archivio OCI 67 MB con `blobs/`; `build/webui` rimossa; G-FOOT `footprint OK` | working tree T-A001 | 2026-10-21 |
 | `TestPreAuthHoldsVFS` (V001-C1) | `go test -count=1 -v ./webui/ -run TestPreAuthHoldsVFS` | pass | 1 top-level PASS (Held, NoHoldVFS); mutazione `public.go` → FAIL | working tree V001-C1 su dbe68ed54 | 2026-10-21 |
 | G-PHASE (P3 / 2) | vedi §3 + `go test -race -count=1 ./webui/...` | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok; `-race` webui ok | b0578c9be | 2026-10-21 |
 | G-LINT/G-FOOT (P3 / 2) | vedi §3 | pass | 0 issues; footprint OK | b0578c9be | 2026-10-21 |

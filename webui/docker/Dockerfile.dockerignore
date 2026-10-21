@@ -1,0 +1,9 @@
+# Used by BuildKit for webui/docker/Dockerfile only. The version comes from
+# the VERSION build arg, so the build needs no git history.
+.git
+.serena
+build
+rclone
+rclone.exe
+*.test
+docs/public

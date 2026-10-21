@@ -1,0 +1,57 @@
+# Builds the rclone fork with the web UI. Run `just <recipe>` inside webui/
+# or `just -f webui/justfile <recipe>` from the repository root; the recipes
+# run from the repository root either way. The docker recipes need buildx.
+
+set working-directory := '..'
+set shell := ['bash', '-euo', 'pipefail', '-c']
+
+# Version shown by `rclone version`, the same as webui/scripts/build.sh
+version := `git describe --tags --always --dirty` + '-webui'
+# Go release required by go.mod, so the build image follows upstream bumps
+go_version := `sed -n 's/^go \([0-9]*\.[0-9]*\).*/\1/p' go.mod`
+alpine_version := '3.24'
+image := 'rclone-webui'
+platforms := 'linux/amd64,linux/arm64'
+bin_platforms := 'linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64,windows/arm64'
+out := 'build/webui'
+
+_buildx := 'docker buildx build -f webui/docker/Dockerfile' + ' --build-arg GO_VERSION=' + go_version + ' --build-arg ALPINE_VERSION=' + alpine_version + ' --build-arg VERSION=' + version
+
+# List the recipes
+default:
+    @just --justfile {{ quote(justfile()) }} --list
+
+# Build ./rclone for this machine with the local Go toolchain
+build:
+    webui/scripts/build.sh
+
+# Build the linux/amd64 + linux/arm64 image and load it into docker (needs the containerd image store)
+image tag=version:
+    {{ _buildx }} --platform {{ platforms }} -t {{ image }}:{{ tag }} -t {{ image }}:latest --load .
+
+# Build the image for one platform and load it, e.g. `just image-for linux/arm64`
+image-for platform tag=version:
+    {{ _buildx }} --platform {{ platform }} -t {{ image }}:{{ tag }} --load .
+
+# Write the linux/amd64 + linux/arm64 image as an OCI archive into build/webui/
+image-oci tag=version:
+    mkdir -p {{ out }}
+    {{ _buildx }} --platform {{ platforms }} -t {{ image }}:{{ tag }} -o type=oci,dest={{ out }}/{{ image }}-{{ tag }}.oci.tar .
+
+# Build the linux/amd64 + linux/arm64 image and push it, e.g. `just image-push ghcr.io/me/rclone-webui`
+image-push repo tag=version:
+    {{ _buildx }} --platform {{ platforms }} -t {{ repo }}:{{ tag }} --push .
+
+# Build in docker the binaries for Linux, macOS and Windows (amd64, arm64) into build/webui/<os>_<arch>/
+binaries:
+    {{ _buildx }} --target binary --platform {{ bin_platforms }} -o type=local,dest={{ out }} .
+    @find {{ out }} -type f -name 'rclone*' | sort
+
+# Build in docker the binary for one platform, e.g. `just binary darwin/arm64`
+binary platform:
+    {{ _buildx }} --target binary --platform {{ platform }} -o type=local,dest={{ out }}/{{ replace(platform, '/', '_') }} .
+    @find {{ out }}/{{ replace(platform, '/', '_') }} -type f -name 'rclone*'
+
+# Remove build/webui/
+clean:
+    rm -rf {{ out }}

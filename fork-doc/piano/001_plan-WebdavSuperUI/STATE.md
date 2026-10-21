@@ -90,21 +90,21 @@ segue il prefisso di directory upstream per i propri commit di unità).
 ## 1. Current unit and scope
 
 - Active scope: bug B-A003 — trovato dal run del primo tag del fork, `v1.75.2-webui.1` (richiesta utente "si, vai" sulla prima release, unità T-A005 non ancora registrata).
-- Scope result: IN PROGRESS
+- Scope result: COMPLETE
 - Type: bug
 - ID / attempt: B-A003 / 1
-- Status: OPEN
+- Status: CLOSED (unit:B-A003:1)
 - Intent: una release del fork deve partire quando build, test, Android e `webui` sono verdi, anche se l'ultimo golangci-lint segnala codice upstream di una release meno recente.
 - Riproduzione: `fork build` run 39642115603 sul tag `v1.75.2-webui.1` (`4bee566e1`): job `lint` FAIL su `cmd/serve/rc.go:223` e `:359` (`errcheck`, `<-s.errChan`), codice upstream di v1.75.2 corretto su `master` con `//nolint:errcheck` e mai portato su `v1.75-stable`; `release` saltato (in più `mac_amd64` e `mac_arm64` cancellati per capacità GitHub). Atteso: release pubblicata.
 - Causa: il job `release` del fork dipendeva da `lint`, che usa `version: latest`; upstream pubblica i binari dai job di build senza aspettare il lint. Il footprint vieta di toccare `cmd/serve/rc.go`.
 - Assigned: Opus (agent-1)
 - Mini-plan: S1 `gen-ci.py`: `release.needs` = `[build, android, webui]` + commento; rigenerare e `--check` su `main`; S2 `fork-doc/ci-e-release.md` (dipendenze del job `release`, come portare una correzione della CI su un ramo di release); S3 commit WIP su `main` e push; S4 sul ramo `v1.75-webui`: `gen-ci.py` da `main`, rigenerare dai workflow di v1.75.2, `--check`, footprint con `UPSTREAM_REF=v1.75.2`, commit; S5 tag sul commit corretto (scelta dell'utente: spostare `.1` o creare `.2`), run del tag con `release` eseguito, chiusura.
 - Done: GitHub Release del tag pubblicata dal job `release` con gli asset di tutte le piattaforme.
-- Current step: S3
-- Next action: commit WIP e push di `main`, poi S4
+- Current step: none (S1–S5 fatti; S5 col tag `v1.75.2-webui.2`, scelta dell'utente)
+- Next action: registrare la release (T-A005)
 - Next eligible plan unit: T-A005 (registrazione della release)
 - Unit base: e4af8ad9d (T-A004/2); branch: main (+ `v1.75-webui` per S4–S5); owned changes: `webui/scripts/gen-ci.py`, `.github/workflows/fork-build.yml`, `fork-doc/ci-e-release.md`, STATE, `fork-doc/storia.md`
-- Repo state: ramo `v1.75-webui` (`4bee566e1`) e tag `v1.75.2-webui.1` pushati; immagini `1.75.2-webui.1`, `1.75`, `1`, `latest` pubblicate su ghcr; nessuna GitHub Release
+- Repo state: fix `4a0c15b87` su `main` (PEV-Result wip) e `2fceae105` su `v1.75-webui`, pushati; tag `v1.75.2-webui.2` pushato, GitHub Release pubblicata; il tag `v1.75.2-webui.1` resta senza release
 
 ## 2. Feature context and readiness
 
@@ -252,6 +252,7 @@ No match is pending closure; multiple matches are a conflict requiring reconcili
 An unresolved required reference prevents advancing, except when explicitly
 suspended for Verify; do not assume it was committed.
 A SHA recorded by a later update is optional. Older valid SHA references remain valid.
+| bug | B-A003 / 1 | 1 | Opus (agent-1) | `webui/scripts/gen-ci.py`: `release.needs` = `[build, android, webui]` (senza `lint`, come upstream che pubblica dai job di build) + commento; `fork-build.yml` rigenerato su `main` e, dai workflow di v1.75.2, sul ramo `v1.75-webui`; `fork-doc/ci-e-release.md` (dipendenze del job `release`, `lint` rosso su un tag, come portare una correzione della CI su un ramo di release). Fix `4a0c15b87` su `main` (PEV-Result wip) e `2fceae105` su `v1.75-webui`; il tag `v1.75.2-webui.1` (`4bee566e1`) resta senza release, nuova release `v1.75.2-webui.2` (scelta dell'utente, nessun tag spostato) | `gen-ci.py --check` ok su entrambi i rami; actionlint ok; footprint ok (`main` rispetto a `upstream/master`, ramo rispetto a `v1.75.2`); link checker 43/0; run 39662653217 sul tag `v1.75.2-webui.2`: `release` success con `lint` rosso per lo stesso `cmd/serve/rc.go` upstream | unit:B-A003:1 |
 
 ## 5. Files and ownership
 
@@ -263,12 +264,14 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-B-A003 / 1 OPEN, S1–S2 fatti (working tree su `main`): `release.needs` senza `lint`, `fork-build.yml` rigenerato (`--check` ok, actionlint ok, footprint ok), `ci-e-release.md` aggiornato. Da fare: S3–S5.
+none — B-A003 chiusa (unit:B-A003:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| release `v1.75.2-webui.2` (B-A003, T-A005) | push di `2fceae105` e del tag; `gh release view/download`; `sha256sum -c`; binario linux-amd64 avviato; `docker buildx imagetools inspect` | pass | `fork build` run 39662653217 (1° tentativo): verdi `build` (linux, linux_386, go1.26, mac_amd64, mac_arm64, windows, other_os), `android-all`, `webui`, `release`; `lint` FAIL atteso (`cmd/serve/rc.go:223,359` upstream). Release https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2, non draft, "Latest": 51 asset, stessi nomi della release upstream v1.75.2 (zip/deb/rpm per piattaforma, osx-amd64/arm64, windows, sorgenti, vendor, `MD5SUMS`/`SHA1SUMS`/`SHA256SUMS`, `version.txt` = `rclone v1.75.2-webui.2`); checksum ok per zip linux-amd64 e tarball; il binario stampa `rclone v1.75.2-webui.2`, 18 flag `--webui`, pagina HTML, PUT 201, PROPFIND 207; il tarball contiene `webui/` e `fork-doc/`. Immagini run 39662653164 success: `1.75.2-webui.2`, `1.75`, `1`, `latest` stesso digest `sha256:5160a772…`, 5 piattaforme, `docker run …:latest version` → `rclone v1.75.2-webui.2` | `2fceae105` | 2026-10-21 |
+| primo tag del fork `v1.75.2-webui.1` (T-A005) | push di `4bee566e1` (ramo `v1.75-webui`) e del tag; prove locali sul ramo: footprint rispetto a `v1.75.2`, build, vet, test `webui` e `serve webdav` (anche `RCLONE_WEBUI=false`), `smoke.sh` | fail → B-A003 | `fork build` run 39642115603: "Check the release tag" verde su linux, windows, other_os (primo uso reale del controllo del tag), binari negli artifact; `lint` FAIL (`errcheck` in `cmd/serve/rc.go` di v1.75.2, corretto solo su `master` upstream); `mac_amd64`/`mac_arm64` cancellati (capacità); `release` saltato. Immagini run 39642115742 success: `1.75.2-webui.1` (`rclone v1.75.2-webui.1`, 18 flag `--webui`), con `1.75`/`1`/`latest` poi passati a `.2` | `4bee566e1` | 2026-10-21 |
 | run CI di verifica (B-A002) | push di `8f56e3629`; `gh run rerun --failed` ×2 per i job macOS non assegnati | pass (salvo `mac_arm64` non eseguito) | `fork build` run 39627387299: verdi `windows` (`ok …/webui`, nessun FAIL), `linux`, `linux_386`, `go1.26`, `mac_amd64` (al 2° tentativo: quicktest, race, binari darwin/amd64), `other_os`, `lint`, `android-all`, `webui`; `mac_arm64` mai assegnato a un runner in 3 tentativi ("The job was not acquired by Runner of type hosted", capacità GitHub macOS arm64; era verde sul run di `b4f5c514b` e non esegue test). Immagini run 39627387428 success, 5 piattaforme | `8f56e3629` | 2026-10-21 |
 | primo run CI del fork (T-A003) | push di `b4f5c514b` su origin/main; Actions abilitato, workflow upstream disattivati (`gh workflow disable`) | parziale | `fork build` (run 39622874319): verdi `webui`, `linux`, `linux_386`, `go1.26`, `mac_arm64`, `other_os`, `lint`, `android-all`; `windows` FAIL (`TestResumeStoreRoundTrip/Concurrent`, → B-A002); `mac_amd64` cancellato da GitHub ("The job was not acquired by Runner of type hosted", capacità macOS); `release` saltato (non è un tag). `fork Build & Push Docker Images` (run 39622874276) success: tag `main`, `beta`, `sha-b4f5c51`, 5 piattaforme, pull anonimo ok (pacchetto pubblico); `docker run ghcr.io/manprint/rclone:main version` → `rclone v1.76.0-beta.10633.b4f5c514b.main`, 18 flag `--webui` nell'help. I run dei workflow upstream sul push hanno saltato tutti i job | `b4f5c514b` | 2026-10-21 |
 | fix resume (B-A002) | `go test -race -count=3 -run TestResume ./webui/`; `go test ./webui/...`; `GOOS=windows go vet` + `go test -c`; golangci-lint | pass (locale) | race ok ×3; webui ok; compilazione windows ok; 0 issue. Verifica Windows = job `windows` del run successivo | working tree B-A002 | 2026-10-21 |

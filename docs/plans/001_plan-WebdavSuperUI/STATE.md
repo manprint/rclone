@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura P2.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — audit V001.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -89,19 +89,19 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
+- Active scope: verify — audit completo di 001_plan-WebdavSuperUI (fasi 0–4, tutte le unità DONE), richiesto dall'utente 2026-10-21
 - Scope result: COMPLETE
-- Type: phase-close
-- ID / attempt: P4 / 1
+- Type: audit
+- ID / attempt: V001 / 1
 - Status: CLOSED
-- Intent: chiusura finale: G-FINAL (G-PHASE + `-race` + G-SMOKE), G-LINT, G-FOOT, review RS e invarianti I-1…I-7, README.
-- Assigned: Opus (agent-1)
-- File / unit heading: phase_05.md — "Phase gates and closure"
-- Current step: completato
-- Next action: nessuna — piano completo. Eventuale lavoro futuro: PR upstream per il bug di `vfs.CreateZip` (§8), sync periodico con `webui/scripts/sync-upstream.sh`.
-- Next eligible plan unit: none
-- Unit base: 5f5916565; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
-- Repo state: HEAD 5f5916565; pulito salvo `.serena/`
+- Intent: review completa del lavoro: completezza, fedeltà ai requisiti, test, gate, invarianti, sicurezza, convenzioni, documentazione, stato.
+- Assigned: Opus (agent-1, auditor)
+- File / unit heading: verify/verify_001_2026-10-21.md
+- Current step: completato — verdetto PASS WITH FINDINGS (3 MINOR: F1 OPEN, F2/F3 FIXED nello stato)
+- Next action: correzione C1 (V001-F1) READY, da applicare solo su richiesta: `/plan-execute-verify-mid execute verify 001 V001`.
+- Next eligible plan unit: none; correzione eleggibile: V001-C1
+- Unit base: c7d1365b3; branch: feat/webdav-frontend; owned changes: `docs/plans/001_plan-WebdavSuperUI/verify/**`, STATE.md
+- Audited range: 81e7372f6..c7d1365b3; uncommitted: nessuno salvo `.serena/` (preesistente, estraneo)
 
 ## 2. Feature context and readiness
 
@@ -230,6 +230,8 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 4.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/surface_test.go` (`TestAPISurfaceLock` con sottotest `Extractor` su JS sintetico e `Message`), `webui/overlay/overlay_test.mjs`, `webui/overlay_node_test.go`, `webui/scripts/smoke.sh` (7 controlli RS + 8° extra: auth, `?tokengen`/`?token=`, link pubblico). Nessun cambiamento di produzione, nessun bug trovato. Deviazioni accettate: estrattore con 2 pattern extra (`checkAuth("x")`, chiavi di `URLSearchParams({…})`) per `login`/`sort`/`order` realmente inviati; righe di commento ed entità HTML (`&amp;`) escluse; query attese = elenco del contratto + `t` (cache buster del video, ignorato dal server); metodi = elenco del contratto; overlay testato anche su `undefined` e sul limite `MAX_SUBPATHS_COUNT`; smoke attende la porta con `/dev/tcp` | G-U41 2/2 (verificato da Opus, 3 test node eseguiti), G-SMOKE `smoke OK` (Opus), shellcheck pulito, G-LINT 0, G-FOOT ok | unit:4.1:1 |
 | sub-phase | 4.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/scripts/sync-upstream.sh` (remote `upstream` se esiste altrimenti `origin`, come check-footprint; `UPSTREAM_REF` esportato per il footprint; rerere; istruzioni sulle 3 righe in conflitto; nessun push), `webui/scripts/build.sh` (`fs.Version=<describe>-webui`, `OUT`); `webui/README.md` riorganizzato e completo (Scopo, Avvio rapido, Flag, Interfaccia web, Client WebDAV, Ripresa, Ricerca e statistiche, Link, Sicurezza, Limiti noti consolidati, Architettura, Sincronizzazione, Test, Build). Aggiunte Opus: righe `--user-from-header`/`--client-ca` e `--response-header` nella tabella dei flag upstream. Deviazioni accettate: sottosezione "Scarico come zip"; `--header` non esiste (è `--response-header`); riga finale `built …` di build.sh | G-U42 + shellcheck puliti (Opus); build.sh → `rclone v1.75.0-556-g88317de3f-dirty-webui` (Opus); sync-upstream: merge pulito exit 0 con footprint/build/test, conflitto su `webdav.go` exit 1 con istruzioni, tree sporco exit 1 (worker, clone di scratch rimosso); flag help vs README 18/18 (Opus) | unit:4.2:1 |
 | phase-close | P4 / 1 | 1 | Opus (agent-1) | solo STATE.md | G-FINAL (G-PHASE + `-race` + G-SMOKE), G-LINT 0, G-FOOT ok; RS e invarianti I-1…I-7 con evidenza; review §7; scope COMPLETE | unit:P4:1 |
+| ad-hoc | post-P4 / 1 | 1 | Opus (agent-1) | `webui/README.md` (righe `--user-from-header` e `--client-ca` nella tabella dei flag upstream), STATE §7 (prova di resa in Chrome headless). Registrato a posteriori dall'audit V001 (V001-F2) | `check-footprint.sh` OK; resa browser §7 | `c7d1365b3` (senza trailer PEV) |
+| audit | V001 / 1 | 1 | Opus (agent-1) | NEW `verify/verify_001_2026-10-21.md`, `verify/index.md`; STATE (intestazione, §1, §4, §6, §11) | G-PHASE (2 run), `-race`, G-SMOKE, G-FOOT, G-LINT, G-U42 pass su `c7d1365b3`; review completa del codice; verdetto PASS WITH FINDINGS | unit:V001:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -248,7 +250,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — piano completo.
+none — audit V001 chiuso; nessuna implementazione sospesa.
 
 ## 7. Verification and reviews
 
@@ -375,6 +377,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 ### Audits
 | Report | Verdict | Current unresolved findings | Evidence |
 |--------|---------|-----------------------------|----------|
+| [V001](verify/verify_001_2026-10-21.md) | PASS WITH FINDINGS | V001-F1 (MINOR, correzione C1 READY) | [verify/index.md](verify/index.md) |
 
 ## 12. Suspended implementation (only while auditing unfinished work)
 

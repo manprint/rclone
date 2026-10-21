@@ -90,18 +90,18 @@ segue il prefisso di directory upstream per i propri commit di unità).
 ## 1. Current unit and scope
 
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
-- Scope result: RUNNING
-- Type: sub-phase
-- ID / attempt: 4.2 / 1
+- Scope result: COMPLETE
+- Type: phase-close
+- ID / attempt: P4 / 1
 - Status: CLOSED
-- Intent: `webui/scripts/sync-upstream.sh`, `webui/scripts/build.sh`, `webui/README.md` completo (sezioni del contratto 4.2).
-- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1)
-- File / unit heading: phase_05.md — "4.2 Documentazione del fork e script di manutenzione"
-- Current step: chiusura
-- Next action: commit `sub-phase(4.2)`, poi aprire P4.
-- Next eligible plan unit: P4 / phase_05.md
-- Unit base: 88317de3f; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
-- Repo state: HEAD 88317de3f; pulito salvo `.serena/`
+- Intent: chiusura finale: G-FINAL (G-PHASE + `-race` + G-SMOKE), G-LINT, G-FOOT, review RS e invarianti I-1…I-7, README.
+- Assigned: Opus (agent-1)
+- File / unit heading: phase_05.md — "Phase gates and closure"
+- Current step: completato
+- Next action: nessuna — piano completo. Eventuale lavoro futuro: PR upstream per il bug di `vfs.CreateZip` (§8), sync periodico con `webui/scripts/sync-upstream.sh`.
+- Next eligible plan unit: none
+- Unit base: 5f5916565; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
+- Repo state: HEAD 5f5916565; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -229,6 +229,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | phase-close | P3 / 1 | 1 | Opus (agent-1) | `webui/README.md` (log upstream: anche le richieste rifiutate con 401 riportano il path con il token), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (token file/zip senza credenziali, token non valido per altro file → 401, listing con `publink_token` solo per `pub`, `@public` file/redirect/viewer/fuori percorso 404/PUT 401, link stabile dopo riavvio con `RCLONE_WEBUI_SECRET`); review §7 | unit:P3:1 |
 | sub-phase | 4.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/surface_test.go` (`TestAPISurfaceLock` con sottotest `Extractor` su JS sintetico e `Message`), `webui/overlay/overlay_test.mjs`, `webui/overlay_node_test.go`, `webui/scripts/smoke.sh` (7 controlli RS + 8° extra: auth, `?tokengen`/`?token=`, link pubblico). Nessun cambiamento di produzione, nessun bug trovato. Deviazioni accettate: estrattore con 2 pattern extra (`checkAuth("x")`, chiavi di `URLSearchParams({…})`) per `login`/`sort`/`order` realmente inviati; righe di commento ed entità HTML (`&amp;`) escluse; query attese = elenco del contratto + `t` (cache buster del video, ignorato dal server); metodi = elenco del contratto; overlay testato anche su `undefined` e sul limite `MAX_SUBPATHS_COUNT`; smoke attende la porta con `/dev/tcp` | G-U41 2/2 (verificato da Opus, 3 test node eseguiti), G-SMOKE `smoke OK` (Opus), shellcheck pulito, G-LINT 0, G-FOOT ok | unit:4.1:1 |
 | sub-phase | 4.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/scripts/sync-upstream.sh` (remote `upstream` se esiste altrimenti `origin`, come check-footprint; `UPSTREAM_REF` esportato per il footprint; rerere; istruzioni sulle 3 righe in conflitto; nessun push), `webui/scripts/build.sh` (`fs.Version=<describe>-webui`, `OUT`); `webui/README.md` riorganizzato e completo (Scopo, Avvio rapido, Flag, Interfaccia web, Client WebDAV, Ripresa, Ricerca e statistiche, Link, Sicurezza, Limiti noti consolidati, Architettura, Sincronizzazione, Test, Build). Aggiunte Opus: righe `--user-from-header`/`--client-ca` e `--response-header` nella tabella dei flag upstream. Deviazioni accettate: sottosezione "Scarico come zip"; `--header` non esiste (è `--response-header`); riga finale `built …` di build.sh | G-U42 + shellcheck puliti (Opus); build.sh → `rclone v1.75.0-556-g88317de3f-dirty-webui` (Opus); sync-upstream: merge pulito exit 0 con footprint/build/test, conflitto su `webdav.go` exit 1 con istruzioni, tree sporco exit 1 (worker, clone di scratch rimosso); flag help vs README 18/18 (Opus) | unit:4.2:1 |
+| phase-close | P4 / 1 | 1 | Opus (agent-1) | solo STATE.md | G-FINAL (G-PHASE + `-race` + G-SMOKE), G-LINT 0, G-FOOT ok; RS e invarianti I-1…I-7 con evidenza; review §7; scope COMPLETE | unit:P4:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -247,7 +248,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — 4.2 chiusa, in commit.
+none — piano completo.
 
 ## 7. Verification and reviews
 
@@ -280,6 +281,8 @@ none — 4.2 chiusa, in commit.
 | G-LINT/G-FOOT (3.2) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.2 | 2026-10-21 |
 | G-U41 | vedi §3 | pass | TestOverlayNode PASS (node v24: index.js e overlay.js `--check`, 3 test `node --test`), TestAPISurfaceLock PASS (Extractor, Message, Assets) | working tree 4.1 | 2026-10-21 |
 | G-SMOKE (4.1) | `webui/scripts/smoke.sh` | pass | 8 controlli, `smoke OK` | working tree 4.1 | 2026-10-21 |
+| G-FINAL (P4) | vedi §3 | pass | webui ok, webdav 89s, lib/http ok; `RCLONE_WEBUI=false` 88s ok; `-race` webui + webdav ok; smoke OK | 5f5916565 | 2026-10-21 |
+| G-LINT/G-FOOT (P4) | vedi §3 | pass | 0 issues; footprint OK | 5f5916565 | 2026-10-21 |
 | G-U42 | vedi §3 | pass | `bash -n` + shellcheck su 5 script; build.sh versione `-webui`; flag help = README 18/18 | working tree 4.2 | 2026-10-21 |
 | G-PHASE (P3) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 113d9e128 | 2026-10-21 |
 | G-LINT/G-FOOT (P3) | vedi §3 | pass | 0 issues; footprint OK | 113d9e128 | 2026-10-21 |
@@ -290,6 +293,7 @@ none — 4.2 chiusa, in commit.
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
+| P4 (finale) | Opus (agent-1) | rev 1 / 5347c8ca5..5f5916565 + tutto il fork 81e7372f6..HEAD | RS: G-SMOKE (`smoke OK`, 8 controlli su binario reale) + TestWebUIListingHTML + TestWebUIDisabledFlag PASS. I-1: run `RCLONE_WEBUI=false` + TestWebUIDisabledByTemplate/Flag; I-2: TestWebUIUpstreamSuiteEnabled + primo run; I-3: footprint OK (3 righe, go.mod/go.sum intatti); I-4: TestWebUIPathTraversal, TestPublicPathTraversal; I-5: TestPreAuthBoundaries (17), TestPublinkBoundaries (23); I-6: TestWebUIDavClientUnchanged; I-7: TestAssetsMatchSource + TestAPISurfaceLock + TestOverlayNode. README completo e coerente con l'help (18/18 flag). `-race` pulito | PASS |
 | P3 | Opus (agent-1) | rev 1 / 13ca8c311..113d9e128 + README | I-4 (CheckPath + path canonico su `@public`, CheckPath su `?token=`), I-5 tutti i casi negativi (TestPreAuthBoundaries 17, TestPublinkBoundaries 23, TestPublicPathTraversal, proxy/no-auth/no-paths), chiavi: master = sha256(secret) o 32 byte casuali, chiavi separate per etichetta HMAC, confronto `hmac.Equal`; log: il package non registra chiavi né token; i log upstream (auth "Unauthorized request", richieste WebDAV) riportano il path → documentato; README "Link di download e link pubblici" (formato, scadenza, secret/env, `--auth-proxy`, `@public` riservato, limiti) | PASS |
 | 3.2 sicurezza | Opus (agent-1) | rev 1 / diff 3.2 su 333020b3c | I-5: `/@public/` intercettato solo con link abilitati (`PublinkPaths` non vuoto, `!IsProxy`) e solo GET/HEAD; ordine dei controlli: formato → CheckPath (I-4, `%2e%2e` decodificato e rifiutato) → path canonico → token (HMAC del remote o di un antenato fino a `""`, `hmac.Equal`, `pub` non copre `pubx`) prima di qualsiasi Stat (nessun oracolo di esistenza) → Stat (404) → `allowed` (403); `allowed` chiuso per prefisso quindi zip/listing del viewer non escono dal sottoalbero; viewer senza token, senza utente, permessi false; redirect costruito da parti validate (`url.URL`); `publicWrap` + `Referrer-Policy: no-referrer` su tutte le risposte; unica scrittura = archivio resume locale (solo file, chiave per percorso, crescita limitata dai file consentiti; `resume-get` anonimo espone la posizione salvata, accettato); nessuna scrittura sul remote; log solo Debugf senza token. README: header `Authorization` ignorato su `@public` (contenuto pubblico), log upstream con token nel path per richieste WebDAV a `@public` | PASS |
 | 3.1 sicurezza | Opus (agent-1) | rev 1 / diff 3.1 su 13ca8c311 | I-5: PreAuth serve senza credenziali solo asset o GET/HEAD con `token` valido, `UsingAuth && !IsProxy`, nessun header Authorization, path sotto baseurl + CheckPath, firma HMAC-SHA256 (chiave derivata, etichette separate token/publink) su user\0remote\0expMs confrontata con `hmac.Equal`, parsing stretto (exp canonico, base64 Strict, user senza NUL); token valido solo per il remote esatto (non figli/padri); dir solo con `zip` (selezione `zip=multi` limitata ai figli da `parseSelection`), file senza `/` finale; `?tokengen` solo dopo auth; risposta via `publicWrap` + `Referrer-Policy: no-referrer`; log senza chiavi né token. Note README per 3.2: secret diversi per server con utenti/dati diversi (token portabili tra server con lo stesso secret), preferire `RCLONE_WEBUI_SECRET` al flag (visibile nei processi), `--webui-token-expiry ≤ 0` disattiva di fatto i link, HTML senza estensione non sandboxato | PASS |
@@ -337,7 +341,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 | 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
 | 2 | phase_03.md | P2 | DONE | review §7; unit:P2:1 |
 | 3 | phase_04.md | P3 | DONE | review §7; unit:P3:1 |
-| 4 | phase_05.md | P4 | IN_PROGRESS | — |
+| 4 | phase_05.md | P4 | DONE | review §7; unit:P4:1 |
 
 Statuses: TODO, IN_PROGRESS, IN_REVIEW, DONE, SKIPPED, BLOCKED.
 SKIPPED retains a reason and does not automatically satisfy dependent units.

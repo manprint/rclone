@@ -91,17 +91,17 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
 - Scope result: RUNNING
-- Type: sub-phase
-- ID / attempt: 3.2 / 1
+- Type: phase-close
+- ID / attempt: P3 / 1
 - Status: CLOSED
 - Intent: link pubblici: `publink_token`/`publink_enabled` nel listing e nella ricerca, ramo `/@public/<tok>/<path>` in PreAuth (viewer, zip, file, view, resume), README "Link di download e link pubblici".
-- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1) — review sicurezza prima della chiusura
-- File / unit heading: phase_04.md — "3.2 Link pubblici: token nel listing e `/@public/`"
+- Assigned: Opus (agent-1)
+- File / unit heading: phase_04.md — "Phase gates and closure"
 - Current step: chiusura
-- Next action: commit `sub-phase(3.2)`, poi aprire P3.
-- Next eligible plan unit: P3 / phase_04.md
-- Unit base: 333020b3c; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
-- Repo state: HEAD 333020b3c; pulito salvo `.serena/`
+- Next action: commit `phase(3)`, poi aprire 4.1.
+- Next eligible plan unit: 4.1 / phase_05.md
+- Unit base: 113d9e128; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
+- Repo state: HEAD 113d9e128; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -226,6 +226,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | phase-close | P2 / 1 | 1 | Opus (agent-1) | `webui/README.md` (`--disable-zip` vale anche per gli zip della UI), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (zip `/d/` con nomi relativi annidati, zip=multi, ricerca annidata); review §7 | unit:P2:1 |
 | sub-phase | 3.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/token.go`, `webui/files.go`, `webui/token_test.go`; `webui/ui.go` (`keys` in `New`, `tokenDownload` in PreAuth, `serveTokengen` primo nel dispatch Handler, `relPath` rifiuta `/pfxfoo` con base `/pfx`), `TestPreAuthBoundaries` (17 sottocasi). Deviazioni accettate: `?tokengen` con token non verificabili (proxy o senza auth) → 200 corpo vuoto (lo script superdufs chiede il token se c'è un utente; passare a upstream metterebbe il file nell'URL); `TokenExpiry ≤ 0` → token scaduti subito (da documentare); sandbox per estensione come `sandboxActive` (HTML senza estensione non sandboxato = stesso comportamento upstream → limite noto) | G-U31a 4/4, G-U31b 17 sottocasi (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (Authorization, remote nella firma, IsProxy, base64 strict) fanno fallire i test (worker); review sicurezza Opus §7 | unit:3.1:1 |
 | sub-phase | 3.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/public.go`, `webui/public_test.go`; `webui/ui.go` (ramo `/@public/` in PreAuth dopo gli asset e prima di `?token=`), `webui/listing.go` + `webui/search.go` (`publink_token`, `publink_enabled`), `webui/resume.go` (`serveResumeRemote`), README "Link di download e link pubblici" (+ riga flag `--webui-publink-paths`), e2e `TestPublinkBoundaries` (23 sottocasi) e `TestPublicPathTraversal`. Deviazioni accettate: `AllowArchive = !DisableZip` nel viewer (il JS ne ha bisogno per i pulsanti zip; zip limitato al sottoalbero consentito); path non canonico (`pub//a.txt`) → 404; resume solo su file (cartella → 404), `ResumePosition` nascosta nel viewer; breadcrumb sopra la cartella condivisa → 404 e nella pagina `?view` verso pagine autenticate (stesso schema superdufs, documentato) | G-U32a 4/4, G-U32b 2/2 (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (walk antenati, `allowed`, `IsProxy`) fanno fallire i test (worker) | unit:3.2:1 |
+| phase-close | P3 / 1 | 1 | Opus (agent-1) | `webui/README.md` (log upstream: anche le richieste rifiutate con 401 riportano il path con il token), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (token file/zip senza credenziali, token non valido per altro file → 401, listing con `publink_token` solo per `pub`, `@public` file/redirect/viewer/fuori percorso 404/PUT 401, link stabile dopo riavvio con `RCLONE_WEBUI_SECRET`); review §7 | unit:P3:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -244,7 +245,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — 3.2 chiusa (review sicurezza PASS), in commit.
+none — P3 chiusa, in commit.
 
 ## 7. Verification and reviews
 
@@ -275,12 +276,16 @@ none — 3.2 chiusa (review sicurezza PASS), in commit.
 | G-LINT/G-FOOT (3.1) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.1 | 2026-10-21 |
 | G-U32a/b | vedi §3 | pass | 4 top-level PASS + TestPublinkBoundaries (23 sottocasi) + TestPublicPathTraversal | working tree 3.2 | 2026-10-21 |
 | G-LINT/G-FOOT (3.2) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.2 | 2026-10-21 |
+| G-PHASE (P3) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 113d9e128 | 2026-10-21 |
+| G-LINT/G-FOOT (P3) | vedi §3 | pass | 0 issues; footprint OK | 113d9e128 | 2026-10-21 |
+| binario reale (P3) | build + serve con `--user/--pass --webui-publink-paths pub` e `RCLONE_WEBUI_SECRET`, richieste python | pass | `/` senza credenziali 401; tokengen 200; `?token=` file 200 e zip cartella 200; token su altro file 401; listing `publink_token` solo `pub`; `@public` file 200 + no-referrer, cartella 302 con slash, viewer uri_prefix `/@public/<tok>/` href `/pub` allow_upload false, fuori percorso 404, PUT 401; dopo riavvio stesso link 200 | 113d9e128 | 2026-10-21 |
 | binario reale (P2) | build + serve, richieste python | pass | `/d/?zip` → sub/, sub/deep/, sub/deep/match.txt, x.txt; `?zip=multi&paths=["d"]` → d/… corretti; `?q=match&json` → d/sub/deep/match.txt | 927499e01 | 2026-10-21 |
 | binario reale (P1) | build + serve, richieste python | pass | PUT /new/sub/f.txt 201; MOVE /src.txt→/dst 412 e dst/keep.txt intatto; PUT senza Origin con padre mancante 409; CHECKAUTH 200; ?edit 200 | 72bf56919 | 2026-10-21 |
 | binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
+| P3 | Opus (agent-1) | rev 1 / 13ca8c311..113d9e128 + README | I-4 (CheckPath + path canonico su `@public`, CheckPath su `?token=`), I-5 tutti i casi negativi (TestPreAuthBoundaries 17, TestPublinkBoundaries 23, TestPublicPathTraversal, proxy/no-auth/no-paths), chiavi: master = sha256(secret) o 32 byte casuali, chiavi separate per etichetta HMAC, confronto `hmac.Equal`; log: il package non registra chiavi né token; i log upstream (auth "Unauthorized request", richieste WebDAV) riportano il path → documentato; README "Link di download e link pubblici" (formato, scadenza, secret/env, `--auth-proxy`, `@public` riservato, limiti) | PASS |
 | 3.2 sicurezza | Opus (agent-1) | rev 1 / diff 3.2 su 333020b3c | I-5: `/@public/` intercettato solo con link abilitati (`PublinkPaths` non vuoto, `!IsProxy`) e solo GET/HEAD; ordine dei controlli: formato → CheckPath (I-4, `%2e%2e` decodificato e rifiutato) → path canonico → token (HMAC del remote o di un antenato fino a `""`, `hmac.Equal`, `pub` non copre `pubx`) prima di qualsiasi Stat (nessun oracolo di esistenza) → Stat (404) → `allowed` (403); `allowed` chiuso per prefisso quindi zip/listing del viewer non escono dal sottoalbero; viewer senza token, senza utente, permessi false; redirect costruito da parti validate (`url.URL`); `publicWrap` + `Referrer-Policy: no-referrer` su tutte le risposte; unica scrittura = archivio resume locale (solo file, chiave per percorso, crescita limitata dai file consentiti; `resume-get` anonimo espone la posizione salvata, accettato); nessuna scrittura sul remote; log solo Debugf senza token. README: header `Authorization` ignorato su `@public` (contenuto pubblico), log upstream con token nel path per richieste WebDAV a `@public` | PASS |
 | 3.1 sicurezza | Opus (agent-1) | rev 1 / diff 3.1 su 13ca8c311 | I-5: PreAuth serve senza credenziali solo asset o GET/HEAD con `token` valido, `UsingAuth && !IsProxy`, nessun header Authorization, path sotto baseurl + CheckPath, firma HMAC-SHA256 (chiave derivata, etichette separate token/publink) su user\0remote\0expMs confrontata con `hmac.Equal`, parsing stretto (exp canonico, base64 Strict, user senza NUL); token valido solo per il remote esatto (non figli/padri); dir solo con `zip` (selezione `zip=multi` limitata ai figli da `parseSelection`), file senza `/` finale; `?tokengen` solo dopo auth; risposta via `publicWrap` + `Referrer-Policy: no-referrer`; log senza chiavi né token. Note README per 3.2: secret diversi per server con utenti/dati diversi (token portabili tra server con lo stesso secret), preferire `RCLONE_WEBUI_SECRET` al flag (visibile nei processi), `--webui-token-expiry ≤ 0` disattiva di fatto i link, HTML senza estensione non sandboxato | PASS |
 | P2 | Opus (agent-1) | rev 1 / c45e3d544..927499e01 + README | I-4 su selezione zip (segmenti, CheckPath, Stat prima degli header), limiti ricerca e contesto, streaming zip con errori solo loggati, deviazione CreateZip (§8) verificata sul codice upstream, disk-stats con Statfs riempito; README Ricerca e statistiche + `--disable-zip` | PASS |
@@ -326,7 +331,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 | 0 | phase_01.md | P0 | DONE | review §7; unit:P0:1 |
 | 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
 | 2 | phase_03.md | P2 | DONE | review §7; unit:P2:1 |
-| 3 | phase_04.md | P3 | IN_PROGRESS | — |
+| 3 | phase_04.md | P3 | DONE | review §7; unit:P3:1 |
 | 4 | phase_05.md | P4 | TODO | — |
 
 Statuses: TODO, IN_PROGRESS, IN_REVIEW, DONE, SKIPPED, BLOCKED.

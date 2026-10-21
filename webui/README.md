@@ -263,9 +263,9 @@ o dati diversi devono avere segreti diversi; due server con lo stesso segreto ch
 accettano i link l'uno dell'altro. I token di download e quelli dei link pubblici usano chiavi distinte
 derivate dallo stesso segreto, e non si scambiano.
 
-Il package non scrive nel log chiavi né token. Il log upstream delle richieste WebDAV riporta però il percorso
-delle richieste che arrivano al server WebDAV, per esempio un `PUT` autenticato a un URL `@public/<token>/...`:
-il token è nel percorso.
+Il package non scrive nel log chiavi né token. I log upstream riportano però il percorso delle richieste che
+arrivano all'autenticazione o al server WebDAV, per esempio un `PUT` a un URL `@public/<token>/...` (rifiutato
+con `401` e registrato come "Unauthorized request", oppure autenticato): il token è nel percorso.
 
 ### Limiti noti
 

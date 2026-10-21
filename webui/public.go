@@ -100,11 +100,11 @@ func (u *UI) publicDownload(r *http.Request) http.Handler {
 	if !ok {
 		return nil
 	}
-	return u.publicWrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return u.publicWrap(u.hold(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The token is in the URL, so keep it from leaking in a Referer
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		u.servePublic(w, r, rest)
-	}))
+	})))
 }
 
 // servePublic replies to a GET or HEAD request for the public link in

@@ -11,7 +11,7 @@ are not recomputed as findings are fixed; current unresolved findings are below.
 ## Findings
 | ID | Severity | Title | Current status | Closed by / date | Evidence |
 |----|----------|-------|----------------|------------------|----------|
-| V001-F1 | MINOR | I download senza credenziali non trattengono la VFS (`Config.HoldVFS` inutilizzato) | OPEN | — (correzione C1, READY) | V001 §Findings |
+| V001-F1 | MINOR | I download senza credenziali non trattengono la VFS (`Config.HoldVFS` inutilizzato) | FIXED | V001-C1 (unit:V001-C1:1), 2026-10-21 | `u.hold(` in `token.go`/`public.go`; `TestPreAuthHoldsVFS` PASS + mutazione; STATE §7 |
 | V001-F2 | MINOR | Commit post-chiusura `c7d1365b3` fuori da un'unità registrata | FIXED | riconciliazione di stato V001, 2026-10-21 | riga ad-hoc in STATE §4 |
 | V001-F3 | MINOR | Intestazione di STATE.md ferma a "chiusura P2" | FIXED | riconciliazione di stato V001, 2026-10-21 | STATE riga 3 |
 

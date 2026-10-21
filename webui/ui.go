@@ -23,7 +23,7 @@ const overlayTag = `<script src="__ASSETS_PREFIX__index.js"></script>`
 type Config struct {
 	BaseURL         func() string // "", "/" or "/prefix", read on every request
 	GetVFS          func(ctx context.Context) (*vfs.VFS, error)
-	HoldVFS         func(http.Handler) http.Handler
+	HoldVFS         func(http.Handler) http.Handler // keeps the VFS of a request alive while the handler runs, used by the downloads served before authentication
 	CheckPath       func(name string) error
 	UsingAuth       func() bool
 	Realm           string
@@ -147,6 +147,15 @@ func (u *UI) Handler(next http.Handler) http.Handler {
 		sandboxActive(w, r)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hold returns h wrapped so that the VFS of a request is kept alive while h
+// runs, or h if the server has no VFS to hold
+func (u *UI) hold(h http.Handler) http.Handler {
+	if u.cfg.HoldVFS == nil {
+		return h
+	}
+	return u.cfg.HoldVFS(h)
 }
 
 // relPath returns the request path with the base URL removed, or "" if

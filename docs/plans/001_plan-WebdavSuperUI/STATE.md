@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — audit V001.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — correzione V001-C1.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -89,19 +89,19 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: verify — audit completo di 001_plan-WebdavSuperUI (fasi 0–4, tutte le unità DONE), richiesto dall'utente 2026-10-21
-- Scope result: COMPLETE
-- Type: audit
-- ID / attempt: V001 / 1
-- Status: CLOSED
-- Intent: review completa del lavoro: completezza, fedeltà ai requisiti, test, gate, invarianti, sicurezza, convenzioni, documentazione, stato.
-- Assigned: Opus (agent-1, auditor)
-- File / unit heading: verify/verify_001_2026-10-21.md
-- Current step: completato — verdetto PASS WITH FINDINGS (3 MINOR: F1 OPEN, F2/F3 FIXED nello stato)
-- Next action: correzione C1 (V001-F1) READY, da applicare solo su richiesta: `/plan-execute-verify-mid execute verify 001 V001`.
-- Next eligible plan unit: none; correzione eleggibile: V001-C1
-- Unit base: c7d1365b3; branch: feat/webdav-frontend; owned changes: `docs/plans/001_plan-WebdavSuperUI/verify/**`, STATE.md
-- Audited range: 81e7372f6..c7d1365b3; uncommitted: nessuno salvo `.serena/` (preesistente, estraneo)
+- Active scope: execute verify — correzioni del report V001 (richiesta utente 2026-10-21: "fixa le cose che hai trovato"); V001-F2/F3 già FIXED nello stato, resta V001-F1 → C1
+- Scope result: RUNNING
+- Type: correction
+- ID / attempt: V001-C1 / 1
+- Status: CLOSED (unit:V001-C1:1)
+- Intent: `tokenDownload` e `publicDownload` trattengono la VFS con `Config.HoldVFS` (via `u.hold`) mentre scrivono la risposta; test `TestPreAuthHoldsVFS`.
+- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1) — review del diff
+- File / unit heading: verify/verify_001_2026-10-21.md — "C1 — Trattenere la VFS nei download serviti prima dell'autenticazione"
+- Current step: chiusa; segue P3 / 2
+- Next action: aprire P3 / 2: G-PHASE (2 run), G-LINT, G-FOOT, review Opus; fase 3 DONE; scope COMPLETE.
+- Next eligible plan unit: P3 / 2 (rivalidazione della fase riaperta)
+- Unit base: dbe68ed54; branch: feat/webdav-frontend; owned changes: `webui/ui.go`, `webui/token.go`, `webui/public.go`, test in `webui/`
+- Repo state: HEAD dbe68ed54; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -232,6 +232,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | phase-close | P4 / 1 | 1 | Opus (agent-1) | solo STATE.md | G-FINAL (G-PHASE + `-race` + G-SMOKE), G-LINT 0, G-FOOT ok; RS e invarianti I-1…I-7 con evidenza; review §7; scope COMPLETE | unit:P4:1 |
 | ad-hoc | post-P4 / 1 | 1 | Opus (agent-1) | `webui/README.md` (righe `--user-from-header` e `--client-ca` nella tabella dei flag upstream), STATE §7 (prova di resa in Chrome headless). Registrato a posteriori dall'audit V001 (V001-F2) | `check-footprint.sh` OK; resa browser §7 | `c7d1365b3` (senza trailer PEV) |
 | audit | V001 / 1 | 1 | Opus (agent-1) | NEW `verify/verify_001_2026-10-21.md`, `verify/index.md`; STATE (intestazione, §1, §4, §6, §11) | G-PHASE (2 run), `-race`, G-SMOKE, G-FOOT, G-LINT, G-U42 pass su `c7d1365b3`; review completa del codice; verdetto PASS WITH FINDINGS | unit:V001:1 |
+| correction | V001-C1 / 1 | 1 | Sonnet (agent-2), review Opus (agent-1) | `webui/ui.go` (commento `Config.HoldVFS`, `func (u *UI) hold`), `webui/token.go` (`tokenDownload` → `u.publicWrap(u.hold(…))`), `webui/public.go` (`publicDownload` idem), NEW `webui/hold_test.go` (`TestPreAuthHoldsVFS`: Held, NoHoldVFS); `verify/index.md`, report V001 (F1 FIXED). Nessuna deviazione | `TestPreAuthHoldsVFS` PASS; mutazione (senza `u.hold(` in `publicDownload`/`tokenDownload`) → FAIL (worker su entrambi, Opus su `public.go`); gofmt, build, vet, lint 0, footprint OK (worker); review Opus: proxy disattiva token e link pubblici (`!IsProxy`) quindi `Provider.HoldVFS` trattiene sempre la VFS fissa; VFS chiusa → 503 | unit:V001-C1:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -250,7 +251,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — audit V001 chiuso; nessuna implementazione sospesa.
+none — V001-C1 chiusa; prossima unità P3 / 2.
 
 ## 7. Verification and reviews
 
@@ -287,6 +288,7 @@ none — audit V001 chiuso; nessuna implementazione sospesa.
 | G-FINAL (P4) | vedi §3 | pass | webui ok, webdav 89s, lib/http ok; `RCLONE_WEBUI=false` 88s ok; `-race` webui + webdav ok; smoke OK | 5f5916565 | 2026-10-21 |
 | G-LINT/G-FOOT (P4) | vedi §3 | pass | 0 issues; footprint OK | 5f5916565 | 2026-10-21 |
 | G-U42 | vedi §3 | pass | `bash -n` + shellcheck su 5 script; build.sh versione `-webui`; flag help = README 18/18 | working tree 4.2 | 2026-10-21 |
+| `TestPreAuthHoldsVFS` (V001-C1) | `go test -count=1 -v ./webui/ -run TestPreAuthHoldsVFS` | pass | 1 top-level PASS (Held, NoHoldVFS); mutazione `public.go` → FAIL | working tree V001-C1 su dbe68ed54 | 2026-10-21 |
 | G-PHASE (P3) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 113d9e128 | 2026-10-21 |
 | G-LINT/G-FOOT (P3) | vedi §3 | pass | 0 issues; footprint OK | 113d9e128 | 2026-10-21 |
 | binario reale (P3) | build + serve con `--user/--pass --webui-publink-paths pub` e `RCLONE_WEBUI_SECRET`, richieste python | pass | `/` senza credenziali 401; tokengen 200; `?token=` file 200 e zip cartella 200; token su altro file 401; listing `publink_token` solo `pub`; `@public` file 200 + no-referrer, cartella 302 con slash, viewer uri_prefix `/@public/<tok>/` href `/pub` allow_upload false, fuori percorso 404, PUT 401; dopo riavvio stesso link 200 | 113d9e128 | 2026-10-21 |
@@ -343,7 +345,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 | 0 | phase_01.md | P0 | DONE | review §7; unit:P0:1 |
 | 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
 | 2 | phase_03.md | P2 | DONE | review §7; unit:P2:1 |
-| 3 | phase_04.md | P3 | DONE | review §7; unit:P3:1 |
+| 3 | phase_04.md | P3 | IN_PROGRESS | riaperta da V001-C1 (rivalidazione P3 / 2); prima chiusura unit:P3:1 |
 | 4 | phase_05.md | P4 | DONE | review §7; unit:P4:1 |
 
 Statuses: TODO, IN_PROGRESS, IN_REVIEW, DONE, SKIPPED, BLOCKED.
@@ -363,6 +365,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | PASS | §7 |
 | TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | PASS | §7 |
 | TestAPISurfaceLock, TestOverlayNode, smoke.sh | 4.1 | G-U41, G-SMOKE | PASS | §7 |
+| TestPreAuthHoldsVFS | V001-C1 | G-PHASE | PASS | §7 |
 
 ### Documentation
 | Document/sections | Owning unit | Status | Evidence |
@@ -377,7 +380,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 ### Audits
 | Report | Verdict | Current unresolved findings | Evidence |
 |--------|---------|-----------------------------|----------|
-| [V001](verify/verify_001_2026-10-21.md) | PASS WITH FINDINGS | V001-F1 (MINOR, correzione C1 READY) | [verify/index.md](verify/index.md) |
+| [V001](verify/verify_001_2026-10-21.md) | PASS WITH FINDINGS | none (F1 FIXED da V001-C1; F2, F3 FIXED) | [verify/index.md](verify/index.md) |
 
 ## 12. Suspended implementation (only while auditing unfinished work)
 

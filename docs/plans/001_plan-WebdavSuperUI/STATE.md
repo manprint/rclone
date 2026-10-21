@@ -91,17 +91,17 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
 - Scope result: RUNNING
-- Type: phase-close
-- ID / attempt: P3 / 1
+- Type: sub-phase
+- ID / attempt: 4.1 / 1
 - Status: CLOSED
-- Intent: link pubblici: `publink_token`/`publink_enabled` nel listing e nella ricerca, ramo `/@public/<tok>/<path>` in PreAuth (viewer, zip, file, view, resume), README "Link di download e link pubblici".
-- Assigned: Opus (agent-1)
-- File / unit heading: phase_04.md — "Phase gates and closure"
+- Intent: API surface lock su `index.js`, test dell'overlay in node (`TestOverlayNode`), smoke e2e su binario reale (`webui/scripts/smoke.sh`).
+- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1)
+- File / unit heading: phase_05.md — "4.1 API surface lock, test overlay in node, smoke e2e"
 - Current step: chiusura
-- Next action: commit `phase(3)`, poi aprire 4.1.
-- Next eligible plan unit: 4.1 / phase_05.md
-- Unit base: 113d9e128; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
-- Repo state: HEAD 113d9e128; pulito salvo `.serena/`
+- Next action: commit `sub-phase(4.1)`, poi aprire 4.2.
+- Next eligible plan unit: 4.2 / phase_05.md
+- Unit base: 5347c8ca5; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
+- Repo state: HEAD 5347c8ca5; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -227,6 +227,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 3.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/token.go`, `webui/files.go`, `webui/token_test.go`; `webui/ui.go` (`keys` in `New`, `tokenDownload` in PreAuth, `serveTokengen` primo nel dispatch Handler, `relPath` rifiuta `/pfxfoo` con base `/pfx`), `TestPreAuthBoundaries` (17 sottocasi). Deviazioni accettate: `?tokengen` con token non verificabili (proxy o senza auth) → 200 corpo vuoto (lo script superdufs chiede il token se c'è un utente; passare a upstream metterebbe il file nell'URL); `TokenExpiry ≤ 0` → token scaduti subito (da documentare); sandbox per estensione come `sandboxActive` (HTML senza estensione non sandboxato = stesso comportamento upstream → limite noto) | G-U31a 4/4, G-U31b 17 sottocasi (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (Authorization, remote nella firma, IsProxy, base64 strict) fanno fallire i test (worker); review sicurezza Opus §7 | unit:3.1:1 |
 | sub-phase | 3.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/public.go`, `webui/public_test.go`; `webui/ui.go` (ramo `/@public/` in PreAuth dopo gli asset e prima di `?token=`), `webui/listing.go` + `webui/search.go` (`publink_token`, `publink_enabled`), `webui/resume.go` (`serveResumeRemote`), README "Link di download e link pubblici" (+ riga flag `--webui-publink-paths`), e2e `TestPublinkBoundaries` (23 sottocasi) e `TestPublicPathTraversal`. Deviazioni accettate: `AllowArchive = !DisableZip` nel viewer (il JS ne ha bisogno per i pulsanti zip; zip limitato al sottoalbero consentito); path non canonico (`pub//a.txt`) → 404; resume solo su file (cartella → 404), `ResumePosition` nascosta nel viewer; breadcrumb sopra la cartella condivisa → 404 e nella pagina `?view` verso pagine autenticate (stesso schema superdufs, documentato) | G-U32a 4/4, G-U32b 2/2 (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (walk antenati, `allowed`, `IsProxy`) fanno fallire i test (worker) | unit:3.2:1 |
 | phase-close | P3 / 1 | 1 | Opus (agent-1) | `webui/README.md` (log upstream: anche le richieste rifiutate con 401 riportano il path con il token), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (token file/zip senza credenziali, token non valido per altro file → 401, listing con `publink_token` solo per `pub`, `@public` file/redirect/viewer/fuori percorso 404/PUT 401, link stabile dopo riavvio con `RCLONE_WEBUI_SECRET`); review §7 | unit:P3:1 |
+| sub-phase | 4.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/surface_test.go` (`TestAPISurfaceLock` con sottotest `Extractor` su JS sintetico e `Message`), `webui/overlay/overlay_test.mjs`, `webui/overlay_node_test.go`, `webui/scripts/smoke.sh` (7 controlli RS + 8° extra: auth, `?tokengen`/`?token=`, link pubblico). Nessun cambiamento di produzione, nessun bug trovato. Deviazioni accettate: estrattore con 2 pattern extra (`checkAuth("x")`, chiavi di `URLSearchParams({…})`) per `login`/`sort`/`order` realmente inviati; righe di commento ed entità HTML (`&amp;`) escluse; query attese = elenco del contratto + `t` (cache buster del video, ignorato dal server); metodi = elenco del contratto; overlay testato anche su `undefined` e sul limite `MAX_SUBPATHS_COUNT`; smoke attende la porta con `/dev/tcp` | G-U41 2/2 (verificato da Opus, 3 test node eseguiti), G-SMOKE `smoke OK` (Opus), shellcheck pulito, G-LINT 0, G-FOOT ok | unit:4.1:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -245,7 +246,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — P3 chiusa, in commit.
+none — 4.1 chiusa, in commit.
 
 ## 7. Verification and reviews
 
@@ -276,6 +277,8 @@ none — P3 chiusa, in commit.
 | G-LINT/G-FOOT (3.1) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.1 | 2026-10-21 |
 | G-U32a/b | vedi §3 | pass | 4 top-level PASS + TestPublinkBoundaries (23 sottocasi) + TestPublicPathTraversal | working tree 3.2 | 2026-10-21 |
 | G-LINT/G-FOOT (3.2) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.2 | 2026-10-21 |
+| G-U41 | vedi §3 | pass | TestOverlayNode PASS (node v24: index.js e overlay.js `--check`, 3 test `node --test`), TestAPISurfaceLock PASS (Extractor, Message, Assets) | working tree 4.1 | 2026-10-21 |
+| G-SMOKE (4.1) | `webui/scripts/smoke.sh` | pass | 8 controlli, `smoke OK` | working tree 4.1 | 2026-10-21 |
 | G-PHASE (P3) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 113d9e128 | 2026-10-21 |
 | G-LINT/G-FOOT (P3) | vedi §3 | pass | 0 issues; footprint OK | 113d9e128 | 2026-10-21 |
 | binario reale (P3) | build + serve con `--user/--pass --webui-publink-paths pub` e `RCLONE_WEBUI_SECRET`, richieste python | pass | `/` senza credenziali 401; tokengen 200; `?token=` file 200 e zip cartella 200; token su altro file 401; listing `publink_token` solo `pub`; `@public` file 200 + no-referrer, cartella 302 con slash, viewer uri_prefix `/@public/<tok>/` href `/pub` allow_upload false, fuori percorso 404, PUT 401; dopo riavvio stesso link 200 | 113d9e128 | 2026-10-21 |
@@ -320,7 +323,7 @@ none
 | 2.2 | phase_03.md | 2.1 | DONE | 1 | G-U22a 1/1, G-U22b 2/2; unit:2.2:1 |
 | 3.1 | phase_04.md | P2 | DONE | 1 | G-U31a 4/4, G-U31b 1/1 (17 sottocasi); review sicurezza PASS; unit:3.1:1 |
 | 3.2 | phase_04.md | 3.1 | DONE | 1 | G-U32a 4/4, G-U32b 2/2 (23 sottocasi); review sicurezza PASS; unit:3.2:1 |
-| 4.1 | phase_05.md | P3 | TODO | 1 | — |
+| 4.1 | phase_05.md | P3 | DONE | 1 | G-U41 2/2 (TestOverlayNode non SKIP, 3 test node), G-SMOKE `smoke OK`; unit:4.1:1 |
 | 4.2 | phase_05.md | 4.1 | TODO | 1 | — |
 
 README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interfaccia web"); P1 → 1.3 + P1 ("Ripresa riproduzione", "Comportamento con client WebDAV" incl. limiti dalla review 1.1); P2 → 2.2 ("Ricerca e statistiche"); P3 → 3.2 ("Link di download e link pubblici"); P4 → 4.2 (completo).
@@ -332,7 +335,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 | 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
 | 2 | phase_03.md | P2 | DONE | review §7; unit:P2:1 |
 | 3 | phase_04.md | P3 | DONE | review §7; unit:P3:1 |
-| 4 | phase_05.md | P4 | TODO | — |
+| 4 | phase_05.md | P4 | IN_PROGRESS | — |
 
 Statuses: TODO, IN_PROGRESS, IN_REVIEW, DONE, SKIPPED, BLOCKED.
 SKIPPED retains a reason and does not automatically satisfy dependent units.
@@ -350,7 +353,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | TestSearchLimits, TestWebUISearch, TestWebUIDiskStats | 2.2 | G-U22a/b | PASS | §7 |
 | TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | PASS | §7 |
 | TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | PASS | §7 |
-| TestAPISurfaceLock, TestOverlayNode, smoke.sh | 4.1 | G-U41, G-SMOKE | TODO | — |
+| TestAPISurfaceLock, TestOverlayNode, smoke.sh | 4.1 | G-U41, G-SMOKE | PASS | §7 |
 
 ### Documentation
 | Document/sections | Owning unit | Status | Evidence |

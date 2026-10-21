@@ -92,6 +92,8 @@ primo run (commit `b4f5c514b`): immagini pubblicate su `ghcr.io/manprint/rclone`
 GitHub non ha assegnato un runner macOS (capacità). `windows` ha trovato un difetto vero (B-A002): su
 Windows un file aperto non si può sostituire né cancellare, e salvataggi e letture contemporanee della
 stessa posizione di riproduzione fallivano. Lo risolve un lock sui file del `resumeStore`.
+Nel run successivo (commit `8f56e3629`) `windows` è verde, come `mac_amd64`; `mac_arm64`, verde nel primo
+run, non ha avuto un runner in tre tentativi (limite di capacità di GitHub per macOS arm64).
 
 ## 8. Documentazione in `fork-doc/` (T-A004)
 

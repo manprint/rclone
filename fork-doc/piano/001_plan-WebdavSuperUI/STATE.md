@@ -90,21 +90,21 @@ segue il prefisso di directory upstream per i propri commit di unità).
 ## 1. Current unit and scope
 
 - Active scope: bug B-A002 — trovato dal primo run della CI del fork (richiesta utente "chiaramente anche i test"), durante T-A004.
-- Scope result: RUNNING
+- Scope result: COMPLETE
 - Type: bug
 - ID / attempt: B-A002 / 1
-- Status: OPEN (fix committato, in attesa della verifica sul job `windows`)
+- Status: CLOSED (unit:B-A002:1)
 - Intent: le posizioni di riproduzione devono funzionare su Windows anche con salvataggi e letture contemporanee.
 - Riproduzione: job `windows` della CI (run 39622874319, commit `b4f5c514b`): `TestResumeStoreRoundTrip/Concurrent` FAIL, 280 errori `open …\resume\<key>.json: The process cannot access the file because it is being used by another process` e `rename …tmp …json` con lo stesso errore. Atteso: PASS come su Linux e macOS.
 - Causa: su Windows un file aperto non si può sostituire (`os.Rename`) né cancellare (`os.Remove`); `resumeStore` non serializzava `load` rispetto a `save`/`clear`.
 - Assigned: Opus (agent-1)
 - Mini-plan: S1 `sync.RWMutex` `files` in `resumeStore` (lettura sotto RLock, rename e remove sotto Lock); S2 `go test -race -count=3 -run TestResume ./webui/`, vet e compilazione dei test per windows, lint; S3 limite noto per più processi sulla stessa `--webui-resume-dir` (in `fork-doc/uso.md`, T-A004); S4 commit WIP, push, verifica sul job `windows` del run successivo (il test non si riproduce su Linux: rename POSIX), poi chiusura.
 - Done: job `windows` verde con `TestResumeStoreRoundTrip` eseguito.
-- Current step: S4
-- Next action: attendere il run della CI sul commit di B-A002 e leggere `TestResumeStoreRoundTrip` nel log del job `windows`
+- Current step: none (S1–S4 fatti)
+- Next action: nessuna nello scope
 - Next eligible plan unit: none
-- Unit base: commit di T-A004; branch: main; owned changes: `webui/resume.go`, STATE
-- Repo state: T-A004 e B-A002 committate e pushate su origin/main
+- Unit base: d8b1511e1 (T-A004); branch: main; owned changes: `webui/resume.go`, STATE, `fork-doc/storia.md`
+- Repo state: fix `8f56e3629` pushato; chiusura committata e pushata; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -243,6 +243,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | bug | B-A001 / 1 | 1 | Opus (agent-1) | NEW `webui/.gitattributes` (`assets/** -text`, `overlay/** text eol=lf`, `scripts/*.sh text eol=lf`). Causa: checkout con `core.autocrlf=true` (runner Windows) → asset CRLF, hash diversi da `SOURCE` e asset CRLF nei binari Windows; `.gitattributes` upstream intatto | riproduzione: clone `core.autocrlf=true` → `TestAssetsMatchSource` FAIL (3 hash); con il fix: asset sha256 identici al repo, `go test ./webui/` ok; `git ls-files --eol` indice già LF (nessuna rinormalizzazione); G-FOOT ok | unit:B-A001:1 |
 | task | T-A003 / 2 | 1 | Opus (agent-1) | `webui/README.md` ("Release del fork": ricetta delle point release con `git diff --binary "$(git merge-base main upstream/master)" main`, valida anche senza tag del fork precedenti; esempio `v1.75.2`; conflitti sulle 3 righe di `webdav.go`) | §7 point release v1.75.2 | unit:T-A003:2 |
 | task | T-A004 / 1 | 1 | Opus (agent-1) | NEW `fork-doc/` alla radice: `README.md` (indice, principio additivo, mappa dei percorsi del fork), `uso.md`, `sviluppo.md`, `build.md`, `ci-e-release.md` (sezioni di `webui/README.md` spostate senza riscrivere il testo, salvo i percorsi relativi, lo stato dell'attivazione e un limite noto da B-A002), `storia.md` (cronologia ed esito del primo run della CI), `analisi/` (richiesta originale e analisi iniziale senza riferimenti privati); piano spostato con `git mv` da `docs/plans/001_plan-WebdavSuperUI/` a `fork-doc/piano/001_plan-WebdavSuperUI/` (stessa profondità); `webui/README.md` ridotto a rimando; `webui/surface_test.go` (messaggio → `fork-doc/sviluppo.md`); `gen-ci.py` (commento, note della release con link a `fork-doc/README.md`) + `fork-build.yml` rigenerato; `check-footprint.sh` (`docs/plans/` → `fork-doc/`). Scelta su richiesta dell'utente: la documentazione del fork esce da `docs/` (cartella upstream) | link checker 42 link relativi (file e ancore) 0 rotti; `git grep` riferimenti privati vuoto; G-FOOT ok; `go test ./webui/` ok; `gen-ci.py --check` ok; shellcheck pulito; contenuto spostato confrontato riga per riga con il README originale | unit:T-A004:1 |
+| bug | B-A002 / 1 | 1 | Opus (agent-1) | `webui/resume.go`: `resumeStore.files` (`sync.RWMutex`): `load` legge sotto RLock, il rename di `save` e il remove di `clear` sotto Lock; `fork-doc/uso.md` (limite: più processi sulla stessa `--webui-resume-dir` su Windows, in T-A004). Fix `8f56e3629` (PEV-Result wip), chiusura con la verifica | locale: race ×3, vet/test -c windows, lint 0; CI run 39627387299 su `8f56e3629`: job `windows` success, `ok github.com/rclone/rclone/webui` senza FAIL (il run precedente falliva su `TestResumeStoreRoundTrip/Concurrent`) | unit:B-A002:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -261,12 +262,13 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-B-A002 in verifica: fix committato e pushato, attende il job `windows` della CI.
+none — B-A002 chiusa (unit:B-A002:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| run CI di verifica (B-A002) | push di `8f56e3629`; `gh run rerun --failed` ×2 per i job macOS non assegnati | pass (salvo `mac_arm64` non eseguito) | `fork build` run 39627387299: verdi `windows` (`ok …/webui`, nessun FAIL), `linux`, `linux_386`, `go1.26`, `mac_amd64` (al 2° tentativo: quicktest, race, binari darwin/amd64), `other_os`, `lint`, `android-all`, `webui`; `mac_arm64` mai assegnato a un runner in 3 tentativi ("The job was not acquired by Runner of type hosted", capacità GitHub macOS arm64; era verde sul run di `b4f5c514b` e non esegue test). Immagini run 39627387428 success, 5 piattaforme | `8f56e3629` | 2026-10-21 |
 | primo run CI del fork (T-A003) | push di `b4f5c514b` su origin/main; Actions abilitato, workflow upstream disattivati (`gh workflow disable`) | parziale | `fork build` (run 39622874319): verdi `webui`, `linux`, `linux_386`, `go1.26`, `mac_arm64`, `other_os`, `lint`, `android-all`; `windows` FAIL (`TestResumeStoreRoundTrip/Concurrent`, → B-A002); `mac_amd64` cancellato da GitHub ("The job was not acquired by Runner of type hosted", capacità macOS); `release` saltato (non è un tag). `fork Build & Push Docker Images` (run 39622874276) success: tag `main`, `beta`, `sha-b4f5c51`, 5 piattaforme, pull anonimo ok (pacchetto pubblico); `docker run ghcr.io/manprint/rclone:main version` → `rclone v1.76.0-beta.10633.b4f5c514b.main`, 18 flag `--webui` nell'help. I run dei workflow upstream sul push hanno saltato tutti i job | `b4f5c514b` | 2026-10-21 |
 | fix resume (B-A002) | `go test -race -count=3 -run TestResume ./webui/`; `go test ./webui/...`; `GOOS=windows go vet` + `go test -c`; golangci-lint | pass (locale) | race ok ×3; webui ok; compilazione windows ok; 0 issue. Verifica Windows = job `windows` del run successivo | working tree B-A002 | 2026-10-21 |
 | point release v1.75.2 (T-A003 / 2) | clone di scratch: `git switch -c v1.75-webui v1.75.2`, `git diff --binary $(git merge-base main origin/master) main \| git apply --3way --index`, `gen-ci.py`, tag `v1.75.2-webui.1` | pass | apply senza conflitti (`webdav.go` 3 righe applicate); `gen-ci.py` ok sui workflow di v1.75.2 (`fork-build.yml` rigenerato); `go build`, vet ok; `go test ./webui/... ./cmd/serve/webdav/` ok (webui 9s, webdav 58s); footprint contro `v1.75.2` OK; controllo del tag ok; `smoke.sh` → `smoke OK` | 4f9018b56 | 2026-10-21 |

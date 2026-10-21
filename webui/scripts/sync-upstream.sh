@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Merges upstream rclone into the current branch and checks the fork still
 # holds. Never pushes. Environment: UPSTREAM_REMOTE (default: "upstream" if
-# that remote exists, else "origin"), UPSTREAM_BRANCH (default: master).
+# that remote exists, else "origin"), UPSTREAM_BRANCH (default: master),
+# UPSTREAM_REF (a ref to merge instead, eg the release tag v1.76.0).
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -15,7 +16,7 @@ if [ -z "$REMOTE" ]; then
 	fi
 fi
 BRANCH=${UPSTREAM_BRANCH:-master}
-REF="$REMOTE/$BRANCH"
+REF=${UPSTREAM_REF:-$REMOTE/$BRANCH}
 
 # Untracked files are fine, changes to tracked ones are not.
 if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -46,7 +47,19 @@ MSG
 	exit 1
 fi
 
-# Compare the footprint with the branch just merged.
+# The fork CI is generated from the upstream workflows.
+echo "sync-upstream: fork CI"
+if ! python3 webui/scripts/gen-ci.py; then
+	echo "sync-upstream: an upstream workflow changed where the fork CI is generated from: adapt webui/scripts/gen-ci.py, run it, commit and re-run this script" >&2
+	exit 1
+fi
+if [ -n "$(git status --porcelain -- .github/workflows/fork-*.yml)" ]; then
+	git add -- .github/workflows/fork-*.yml
+	git commit -q -m "webui: regenerate the fork CI from the upstream workflows"
+	echo "sync-upstream: committed the regenerated fork CI"
+fi
+
+# Compare the footprint with the ref just merged.
 export UPSTREAM_REF="$REF"
 echo "sync-upstream: footprint"
 webui/scripts/check-footprint.sh

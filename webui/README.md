@@ -85,6 +85,44 @@ richiesta passa all'upstream.
   `allow_search`, `enable_data_stats` e `show_concurrent_uploads_settings` dei dati della pagina; le
   funzioni corrispondenti arrivano nelle fasi successive.
 
+## Comportamento con client WebDAV
+
+Le operazioni di scrittura della pagina usano i metodi WebDAV normali, ma alcune hanno bisogno di regole
+diverse da quelle di `x/net/webdav`. La UI le applica solo alle richieste con intestazione `Origin`, che i
+browser aggiungono alle richieste `PUT`, `PATCH` e `MOVE` fatte da script e che i client WebDAV non
+inviano: per questi ultimi le risposte restano quelle upstream (un test le confronta con un server a UI
+spenta).
+
+- `CHECKAUTH` e `LOGOUT` (metodi della pagina, sconosciuti all'upstream): `CHECKAUTH` risponde con il nome
+  dell'utente autenticato (vuoto senza autenticazione; `?login` senza utente chiede le credenziali);
+  `LOGOUT` risponde `401` con `WWW-Authenticate: Basic realm="<--realm>"` (default `rclone`) così il
+  browser dimentica le credenziali.
+- `PUT` dal browser crea le cartelle mancanti del percorso (upstream risponde `409`) e risponde `201`.
+  Se il corpo arriva incompleto: con `--vfs-cache-mode` `off` o `minimal` il file parziale è cancellato;
+  con `writes` o `full` è tenuto perché la pagina possa riprendere l'upload. Con `--read-only` la
+  richiesta passa all'upstream.
+- `PATCH` con `X-Update-Range: append` (ripresa di un upload) aggiunge il corpo in coda al file e
+  risponde `204`. Richiede `--vfs-cache-mode writes` o `full`: altrimenti `405`.
+- `MOVE` dal browser senza intestazione `Overwrite` verso una cartella che esiste già risponde
+  `412 Destination folder exists`. La pagina non chiede conferma per le cartelle e l'upstream, in
+  assenza di `Overwrite`, sovrascrive: senza questo controllo spostare un elemento su una cartella
+  esistente la cancellerebbe con tutto il contenuto.
+- `?edit` e `?view` su un file aprono l'editor o il player della pagina; un file è modificabile se non
+  supera `--webui-edit-max-size` e i primi 1024 byte sono testo UTF-8 senza byte nulli.
+- I file `.html`, `.htm`, `.xhtml`, `.svg`, `.svgz`, `.xml`, `.xsl` sono serviti con
+  `Content-Security-Policy: sandbox`: una pagina caricata sul server non può eseguire script con le
+  credenziali di chi la apre.
+
+Note e limiti:
+
+- Un upload che sovrascrive un file esistente e si interrompe fa perdere il contenuto originale (il file
+  è troncato all'apertura): è lo stesso comportamento dell'upstream e di superdufs.
+- `PUT` e `PATCH` dal browser non controllano i lock WebDAV e ignorano `X-OC-Mtime`, che il browser
+  non usa.
+- Le richieste `PUT`, `PATCH`, `MOVE`, `CHECKAUTH` da un altro sito richiedono un preflight CORS, che
+  riesce solo se `--allow-origin` lo consente. Un client WebDAV web servito da un'altra origine e
+  autorizzato con `--allow-origin` invia `Origin` e riceve quindi le regole del browser descritte sopra.
+
 ## Ripresa riproduzione
 
 Con `--webui-resume` il player dell'interfaccia ricorda fino a dove è arrivata la riproduzione di un file

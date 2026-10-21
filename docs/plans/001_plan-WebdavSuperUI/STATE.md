@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 1.3.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura P1.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -98,9 +98,9 @@ segue il prefisso di directory upstream per i propri commit di unità).
 - Assigned: —; supervisor: Opus (agent-1)
 - File / unit heading: —
 - Current step: none
-- Next action: aprire P1: README "Comportamento con client WebDAV" (con limiti review 1.1), G-PHASE, G-LINT, G-FOOT, review Opus.
-- Next eligible plan unit: P1 / phase_02.md
-- Unit base: commit di 1.3 (unit:1.3:1); branch: feat/webdav-frontend; owned changes: —
+- Next action: aprire 2.1 (phase_03.md §2.1) e delegarla a Sonnet.
+- Next eligible plan unit: 2.1 / phase_03.md
+- Unit base: commit di P1 (unit:P1:1); branch: feat/webdav-frontend; owned changes: —
 - Repo state: pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
@@ -220,6 +220,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 1.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/util.go`, `webui/write.go`, `webui/util_test.go`; `webui/ui.go` (Handler: CheckPath → serveWrite → serveListing), `webui/listing.go` (user da `lookupUser`), test e2e (+ `TestWebUIPutReadOnly`, `TestErrStatus` extra). Deviazioni accettate: `user(r)` ritorna string (`lookupUser` per il *string del listing); `destRemote` false con Destination vuota (upstream 400); PUT su URL che termina con `/` → next; errori Stat in PATCH mappati con `errStatus` | G-U11 8/8 (verificato da Opus), `-race -count=10` ok, oracoli mutati falliscono (worker); review focalizzata Opus §7 | unit:1.1:1 |
 | sub-phase | 1.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/edit.go`, `webui/edit_test.go`; `webui/data.go` (EditData), `webui/listing.go` (render condiviso `writeData`), `webui/ui.go` (serveWrite → serveEdit → serveListing → sandboxActive → next), test e2e. Deviazione accettata: CSP impostata dopo il rifiuto del listing (stesso effetto, nessuno Stat extra) | G-U12 3/3 (verificato da Opus), suite/lint/footprint verdi | unit:1.2:1 |
 | sub-phase | 1.3 / 1 | 1 | Sonnet (agent-2) | NEW `webui/resume.go`, `webui/resume_test.go`; `webui/ui.go` (store in `New`, `serveResume` tra serveWrite e serveEdit), `webui/listing.go` (`pathItem` riusabile dalla ricerca), README "Ripresa riproduzione", `TestWebUIResumeEndpoints`. Scelte accettate: retention ≤ 0 = conserva per sempre (documentato); record corrotto → 500 su get, ignorato nel listing; race cleanup/save sulla stessa chiave scaduta accettata (innocua) | G-U13a 4/4, G-U13b 1/1 (verificati da Opus), `-race ./webui/` ok, suite/lint/footprint verdi (worker) | unit:1.3:1 |
+| phase-close | P1 / 1 | 1 | Opus (agent-1) | `webui/README.md` (sezione "Comportamento con client WebDAV" con limiti), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (PUT annidato 201, GET contenuto, MOVE guard 412 con dst intatta, PUT senza Origin 409, CHECKAUTH 200, ?edit 200); review §7 | unit:P1:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -259,10 +260,14 @@ none
 | G-U12 | vedi §3 | pass | 3 top-level PASS | working tree 1.2 | 2026-10-21 |
 | G-U13a | vedi §3 | pass | 4 top-level PASS | working tree 1.3 | 2026-10-21 |
 | G-U13b | vedi §3 | pass | TestWebUIResumeEndpoints PASS | working tree 1.3 | 2026-10-21 |
+| G-PHASE (P1) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 72bf56919 + README | 2026-10-21 |
+| G-LINT/G-FOOT (P1) | vedi §3 | pass | 0 issues; footprint OK | 72bf56919 + README | 2026-10-21 |
+| binario reale (P1) | build + serve, richieste python | pass | PUT /new/sub/f.txt 201; MOVE /src.txt→/dst 412 e dst/keep.txt intatto; PUT senza Origin con padre mancante 409; CHECKAUTH 200; ?edit 200 | 72bf56919 | 2026-10-21 |
 | binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
+| P1 | Opus (agent-1) | rev 1 / b895eab2f..72bf56919 + README | ordine dispatch Handler (CheckPath → write → resume → edit → listing → CSP → next); I-4 (TestWebUIPathTraversal, destRemote), I-6 (TestWebUIDavClientUnchanged); D9/D10 su test e binario; resume: permessi 0700/0600, scrittura atomica, nessuna scrittura sul remote; README Ripresa riproduzione + Comportamento client WebDAV con limiti | PASS |
 | 1.1 focalizzata | Opus (agent-1) | rev 1 / diff 1.1 su b895eab2f | integrità dati: parziale rimosso solo con cache < writes, tenuto per append altrimenti; PUT in sovrascrittura interrotto perde l'originale (O_TRUNC) = stessa semantica di upstream e superdufs → documentare nei limiti; MOVE guard solo con Origin + Overwrite assente + Destination sotto baseurl e dir esistente; I-4 (CheckPath su URL e Destination), I-6 (TestWebUIDavClientUnchanged); CSRF: PUT/PATCH/MOVE/CHECKAUTH cross-origin richiedono preflight CORS (non configurato di default); PUT browser ignora lock WebDAV e X-OC-Mtime (il browser non li usa) → documentare | PASS, obbligo README a P1: limiti (sovrascrittura interrotta, lock/X-OC-Mtime) |
 | P0 | Opus (agent-1) | rev 1 / 3e1d4f738..1b3287445 | ordine middleware (PreAuth via Option prima di StripPrefix/auth; Handler dopo HoldVFS/gzip, prima di Handle); I-1 (run disabilitato + TestWebUIDisabledByTemplate/Flag), I-2 (TestWebUIUpstreamSuiteEnabled con `w.webui` non nil), I-3 (footprint), I-7 (TestAssetsMatchSource); redirect senza open redirect; listing senza Stat per richieste non-UI; README Flag/Sincronizzazione/Interfaccia web coerenti | PASS |
 | 0.1 diff check | Opus (agent-1) | rev 1 / diff 0.1 | D2 (3 righe, gofmt), D4 (cmp, SOURCE senza credenziali), D6 (condizione in glue), overlay = originale per size ≥ 0, ordine middleware (Option prima delle Use; webuiUse prima di Handle) | ok (review completa a P0) |
@@ -301,7 +306,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 | ID | File | Closure unit | Status | Review / commit reference |
 |----|------|--------------|--------|---------------------------|
 | 0 | phase_01.md | P0 | DONE | review §7; unit:P0:1 |
-| 1 | phase_02.md | P1 | IN_PROGRESS | — |
+| 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
 | 2 | phase_03.md | P2 | TODO | — |
 | 3 | phase_04.md | P3 | TODO | — |
 | 4 | phase_05.md | P4 | TODO | — |
@@ -329,7 +334,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 |-------------------|-------------|--------|----------|
 | webui/README.md — Flag, Sincronizzazione | 0.1 | DONE | sezioni presenti (nota temporanea "funzioni introdotte dalle fasi successive" da rimuovere in 4.2) |
 | webui/README.md — Interfaccia web | 0.2 | DONE | sezione presente |
-| webui/README.md — Ripresa riproduzione / Comportamento client WebDAV | 1.3 / P1 | IN_PROGRESS | "Ripresa riproduzione" presente; resto a P1 |
+| webui/README.md — Ripresa riproduzione / Comportamento client WebDAV | 1.3 / P1 | DONE | entrambe le sezioni presenti |
 | webui/README.md — Ricerca e statistiche | 2.2 | TODO | — |
 | webui/README.md — Link di download e link pubblici | 3.2 | TODO | — |
 | webui/README.md — completo | 4.2 | TODO | — |

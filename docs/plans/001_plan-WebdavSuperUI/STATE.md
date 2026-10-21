@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 0.2.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura P0.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -98,9 +98,9 @@ segue il prefisso di directory upstream per i propri commit di unità).
 - Assigned: —; supervisor: Opus (agent-1)
 - File / unit heading: —
 - Current step: none
-- Next action: aprire P0: G-PHASE, G-LINT, G-FOOT e review Opus della fase 0.
-- Next eligible plan unit: P0 / phase_01.md
-- Unit base: commit di 0.2 (unit:0.2:1); branch: feat/webdav-frontend; owned changes: —
+- Next action: aprire 1.1 (phase_02.md §1.1) e delegarla a Sonnet.
+- Next eligible plan unit: 1.1 / phase_02.md
+- Unit base: commit di P0 (unit:P0:1); branch: feat/webdav-frontend; owned changes: —
 - Repo state: pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
@@ -216,6 +216,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | plan | 001 / 1 | 1 | Opus (agent-1) | `docs/plans/001_plan-WebdavSuperUI/*` | validazione READY §2 | unit:0.1:1 (incluso) |
 | sub-phase | 0.1 / 1 | 1 | Sonnet (agent-2) | `webui/{options,ui,assets}.go`, `webui/ui_test.go`, `webui/assets/*`, `webui/overlay/overlay.js`, `webui/scripts/{check-footprint,sync-assets}.sh`, `webui/README.md`, `cmd/serve/webdav/webdav_webui{,_test}.go`, 3 righe in `webdav.go`. Extra accettato da Opus: `webui.AssetsPrefix()` esportata per i test del package webdav; `New` rifiuta `cfg.BaseURL == nil`; `TestWebUIFlagsRegistered` verifica il default dichiarato in `OptionsInfo` (il `DefValue` del flag segue `RCLONE_WEBUI`) | G-U01, G-BASE, run `RCLONE_WEBUI=false`, G-FOOT, G-LINT pass; cmp asset ok; controllo diff Opus | unit:0.1:1 |
 | sub-phase | 0.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/data.go`, `webui/listing.go`, `webui/data_test.go`; `webui/ui.go` (Handler → serveListing), `webui/README.md` (Interfaccia web), `cmd/serve/webdav/webdav_webui_test.go` (10 test + `startWebUIDir`). Deviazioni accettate: titolo del template upstream di default è `<title>/</title>` (non "Directory listing of /", che è del template di test); `naturalLess("x1","x01")` true; disable-zip/no-modtime come subtest di `TestWebUIListingJSON`; redirect costruito con `url.URL` da `remote` (niente open redirect) | G-U02a 2/2, G-U02b 12/12 (verificati da Opus), suite e lint verdi (worker) | unit:0.2:1 |
+| phase-close | P0 / 1 | 1 | Opus (agent-1) | solo STATE.md | G-PHASE (build, vet, test webui+webdav+lib/http, run `RCLONE_WEBUI=false`), G-LINT 0 issue, G-FOOT ok; controllo binario reale (pagina, fallback curl, redirect, asset); review Opus §7 | unit:P0:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -248,9 +249,14 @@ none
 | G-LINT | vedi §3 | pass | 0 issues | working tree 0.1 | 2026-10-21 |
 | G-U02a | vedi §3 | pass | 2 RUN/PASS | working tree 0.2 | 2026-10-21 |
 | G-U02b | vedi §3 | pass | 12 top-level PASS incl. TestWebUIUpstreamSuiteEnabled | working tree 0.2 | 2026-10-21 |
+| G-PHASE (P0) | vedi §3 | pass | webui ok, cmd/serve/webdav 79s, lib/http ok; `RCLONE_WEBUI=false` run 78s ok | 1b3287445 | 2026-10-21 |
+| G-LINT (P0) | vedi §3 | pass | 0 issues | 1b3287445 | 2026-10-21 |
+| G-FOOT (P0) | vedi §3 | pass | footprint OK | 1b3287445 | 2026-10-21 |
+| binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
+| P0 | Opus (agent-1) | rev 1 / 3e1d4f738..1b3287445 | ordine middleware (PreAuth via Option prima di StripPrefix/auth; Handler dopo HoldVFS/gzip, prima di Handle); I-1 (run disabilitato + TestWebUIDisabledByTemplate/Flag), I-2 (TestWebUIUpstreamSuiteEnabled con `w.webui` non nil), I-3 (footprint), I-7 (TestAssetsMatchSource); redirect senza open redirect; listing senza Stat per richieste non-UI; README Flag/Sincronizzazione/Interfaccia web coerenti | PASS |
 | 0.1 diff check | Opus (agent-1) | rev 1 / diff 0.1 | D2 (3 righe, gofmt), D4 (cmp, SOURCE senza credenziali), D6 (condizione in glue), overlay = originale per size ≥ 0, ordine middleware (Option prima delle Use; webuiUse prima di Handle) | ok (review completa a P0) |
 
 ## 8. Technical revisions and deviations
@@ -286,7 +292,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 ### Phases
 | ID | File | Closure unit | Status | Review / commit reference |
 |----|------|--------------|--------|---------------------------|
-| 0 | phase_01.md | P0 | IN_PROGRESS | — |
+| 0 | phase_01.md | P0 | DONE | review §7; unit:P0:1 |
 | 1 | phase_02.md | P1 | TODO | — |
 | 2 | phase_03.md | P2 | TODO | — |
 | 3 | phase_04.md | P3 | TODO | — |

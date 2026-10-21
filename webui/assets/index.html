@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en-US">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <noscript>
+    <meta http-equiv="refresh" content="0; url=?noscript">
+  </noscript>
+  <link rel="icon" type="image/x-icon" href="__ASSETS_PREFIX__favicon.ico">
+  <link rel="stylesheet" href="__ASSETS_PREFIX__index.css">
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════
+       STICKY HEADER
+  ═══════════════════════════════════════════ -->
+  <header id="app-header" class="app-header">
+
+    <!-- Row 1: Breadcrumb -->
+    <div class="hrow hrow-breadcrumb">
+      <nav id="breadcrumb" class="breadcrumb" aria-label="Navigation"></nav>
+    </div>
+
+    <!-- Row 2: Toolbar -->
+    <div class="hrow hrow-toolbar">
+
+      <!-- Left: file-operation buttons -->
+      <div class="toolbar-left">
+
+        <!-- Download dir as ZIP / download single file -->
+        <a id="btn-download" class="tbtn is-hidden" title="Download" download>
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+            <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+          </svg>
+        </a>
+
+        <!-- Move file (editor mode) -->
+        <button id="btn-move-file" class="tbtn is-hidden" title="Move &amp; Rename" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path fill-rule="evenodd" d="M1.5 1.5A.5.5 0 0 0 1 2v4.8a2.5 2.5 0 0 0 2.5 2.5h9.793l-3.347 3.346a.5.5 0 0 0 .708.708l4.2-4.2a.5.5 0 0 0 0-.708l-4-4a.5.5 0 0 0-.708.708L13.293 8.3H3.5A1.5 1.5 0 0 1 2 6.8V2a.5.5 0 0 0-.5-.5z"/>
+          </svg>
+        </button>
+
+        <!-- Delete file (editor mode) -->
+        <button id="btn-delete-file" class="tbtn is-hidden" title="Delete" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M6.854 7.146a.5.5 0 1 0-.708.708L7.293 9l-1.147 1.146a.5.5 0 0 0 .708.708L8 9.707l1.146 1.147a.5.5 0 0 0 .708-.708L8.707 9l1.147-1.146a.5.5 0 0 0-.708-.708L8 8.293 6.854 7.146z"/>
+            <path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2z"/>
+          </svg>
+        </button>
+
+        <!-- Upload files -->
+        <label id="btn-upload-file" class="tbtn is-hidden" for="input-upload-file" title="Upload files">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+            <path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 1-.708-.708l3-3z"/>
+          </svg>
+        </label>
+        <input type="file" id="input-upload-file" class="sr-only" multiple>
+
+        <!-- Upload folder -->
+        <label id="btn-upload-folder" class="tbtn is-hidden" for="input-upload-folder" title="Upload folder">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M1.5 3A1.5 1.5 0 0 0 0 4.5v7A1.5 1.5 0 0 0 1.5 13h13a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 14.5 3H8.707l-.853-.854A.5.5 0 0 0 7.5 2.5h-4a.5.5 0 0 0-.354.146L1.5 3zm0 1h13A.5.5 0 0 1 15 4.5v7a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-7A.5.5 0 0 1 1.5 4z"/>
+            <path d="M8 10V6.707l1.146 1.147a.5.5 0 0 0 .708-.708l-2-2a.5.5 0 0 0-.708 0l-2 2a.5.5 0 1 0 .708.708L7 6.707V10a.5.5 0 0 0 1 0z"/>
+          </svg>
+        </label>
+        <input type="file" id="input-upload-folder" class="sr-only" webkitdirectory directory multiple>
+
+        <!-- New folder -->
+        <button id="btn-new-folder" class="tbtn is-hidden" title="New folder" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="m.5 3 .04.87a1.99 1.99 0 0 0-.342 1.311l.637 7A2 2 0 0 0 2.826 14H9v-1H2.826a1 1 0 0 1-.995-.91l-.637-7A1 1 0 0 1 2.19 4h11.62a1 1 0 0 1 .996 1.09L14.54 8h1.005l.256-2.819A2 2 0 0 0 13.81 3H9.828a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 6.172 1H2.5a2 2 0 0 0-2 2zm5.672-1a1 1 0 0 1 .707.293L7.586 3H2.19c-.24 0-.47.042-.683.12L1.5 2.98a1 1 0 0 1 1-.98h3.672z"/>
+            <path d="M13.5 10a.5.5 0 0 1 .5.5V12h1.5a.5.5 0 1 1 0 1H14v1.5a.5.5 0 1 1-1 0V13h-1.5a.5.5 0 0 1 0-1H13v-1.5a.5.5 0 0 1 .5-.5z"/>
+          </svg>
+        </button>
+
+        <!-- New file -->
+        <button id="btn-new-file" class="tbtn is-hidden" title="New file" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 6.5a.5.5 0 0 1 .5.5v1.5H10a.5.5 0 0 1 0 1H8.5V11a.5.5 0 0 1-1 0V9.5H6a.5.5 0 0 1 0-1h1.5V7a.5.5 0 0 1 .5-.5z"/>
+            <path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5h-2z"/>
+          </svg>
+        </button>
+
+        <!-- Save file (editor mode) -->
+        <button id="btn-save-file" class="tbtn is-hidden" title="Save" type="button">
+          <svg viewBox="0 0 1024 1024" width="16" height="16" aria-hidden="true">
+            <path d="M426.666667 682.666667v42.666666h170.666666v-42.666666h-170.666666z m-42.666667-85.333334h298.666667v128h42.666666V418.133333L605.866667 298.666667H298.666667v426.666666h42.666666v-128h42.666667z m260.266667-384L810.666667 379.733333V810.666667H213.333333V213.333333h430.933334zM341.333333 341.333333h85.333334v170.666667H341.333333V341.333333z" fill="currentColor"/>
+          </svg>
+        </button>
+
+      </div><!-- /.toolbar-left -->
+
+      <!-- Right: search + upload limit + auth -->
+      <div class="toolbar-right">
+
+        <!-- Search -->
+        <form id="search-form" class="search-form is-hidden" role="search">
+          <span class="search-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+            </svg>
+          </span>
+          <input id="search-input" name="q" type="search" maxlength="128" autocomplete="off" placeholder="Search…" tabindex="1">
+          <input type="submit" class="sr-only">
+        </form>
+
+        <!-- Upload concurrency limit -->
+        <div id="upload-limit" class="upload-limit is-hidden">
+          <span class="upload-limit-label">Uploads</span>
+          <input id="upload-limit-input" class="upload-limit-input" type="number" min="1" max="10" step="1" inputmode="numeric" aria-label="Max concurrent uploads">
+          <button id="upload-limit-apply" class="upload-limit-apply" type="button">Apply</button>
+          <span id="upload-limit-badge" class="upload-limit-badge" aria-live="polite"></span>
+        </div>
+
+        <!-- Login -->
+        <button id="btn-login" class="tbtn tbtn-text is-hidden" title="Login" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path fill-rule="evenodd" d="M6 3.5a.5.5 0 0 1 .5-.5h8a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-.5.5h-8a.5.5 0 0 1-.5-.5v-2a.5.5 0 0 0-1 0v2A1.5 1.5 0 0 0 6.5 14h8a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 14.5 2h-8A1.5 1.5 0 0 0 5 3.5v2a.5.5 0 0 0 1 0v-2z"/>
+            <path fill-rule="evenodd" d="M11.854 8.354a.5.5 0 0 0 0-.708l-3-3a.5.5 0 1 0-.708.708L10.293 7.5H1.5a.5.5 0 0 0 0 1h8.793l-2.147 2.146a.5.5 0 0 0 .708.708l3-3z"/>
+          </svg>
+          <span class="tbtn-label">Login</span>
+        </button>
+
+        <!-- Logout -->
+        <div id="btn-logout" class="tbtn tbtn-text is-hidden" title="Logout" role="button" tabindex="0">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+            <path fill-rule="evenodd" d="M10 3.5a.5.5 0 0 0-.5-.5h-8a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5v-2a.5.5 0 0 1 1 0v2A1.5 1.5 0 0 1 9.5 14h-8A1.5 1.5 0 0 1 0 12.5v-9A1.5 1.5 0 0 1 1.5 2h8A1.5 1.5 0 0 1 11 3.5v2a.5.5 0 0 1-1 0z"/>
+            <path fill-rule="evenodd" d="M4.146 8.354a.5.5 0 0 1 0-.708l3-3a.5.5 0 1 1 .708.708L5.707 7.5H14.5a.5.5 0 0 1 0 1H5.707l2.147 2.146a.5.5 0 0 1-.708.708z"/>
+          </svg>
+          <span id="user-name" class="tbtn-label"></span>
+        </div>
+
+      </div><!-- /.toolbar-right -->
+    </div><!-- /.hrow-toolbar -->
+
+    <!-- Row 3: Multi-selection toolbar (shown on selection) -->
+    <div id="selection-toolbar" class="selection-toolbar is-hidden" role="toolbar" aria-label="Selection actions">
+      <span id="selection-count" class="selection-count"></span>
+      <div class="selection-actions">
+        <button id="sel-btn-download" class="sel-btn is-hidden" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+            <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+          </svg>
+          Download
+        </button>
+        <button id="sel-btn-move" class="sel-btn is-hidden" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+            <path fill-rule="evenodd" d="M1.5 1.5A.5.5 0 0 0 1 2v4.8a2.5 2.5 0 0 0 2.5 2.5h9.793l-3.347 3.346a.5.5 0 0 0 .708.708l4.2-4.2a.5.5 0 0 0 0-.708l-4-4a.5.5 0 0 0-.708.708L13.293 8.3H3.5A1.5 1.5 0 0 1 2 6.8V2a.5.5 0 0 0-.5-.5z"/>
+          </svg>
+          Move
+        </button>
+        <button id="sel-btn-delete" class="sel-btn sel-btn-danger is-hidden" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M6.854 7.146a.5.5 0 1 0-.708.708L7.293 9l-1.147 1.146a.5.5 0 0 0 .708.708L8 9.707l1.146 1.147a.5.5 0 0 0 .708-.708L8.707 9l1.147-1.146a.5.5 0 0 0-.708-.708L8 8.293 6.854 7.146z"/>
+            <path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2z"/>
+          </svg>
+          Delete
+        </button>
+        <button id="sel-btn-playlist" class="sel-btn is-hidden" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M2 2h12v1H2V2zm0 3h12v1H2V5zm0 3h8v1H2V8zm0 3h4v1H2v-1zm8.5-2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm0 4a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/>
+            <path d="M13.5 10H12V8.5a.5.5 0 0 0-1 0V10H9.5a.5.5 0 0 0 0 1H11v1.5a.5.5 0 0 0 1 0V11h1.5a.5.5 0 0 0 0-1z"/>
+          </svg>
+          Playlist
+        </button>
+        <button id="sel-btn-resume-reset" class="sel-btn is-hidden" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 3a5 5 0 1 0 4.546 7.083.5.5 0 1 1 .908.418A6 6 0 1 1 8 2h2.793L9.146.354a.5.5 0 1 1 .708-.708l2.5 2.5a.5.5 0 0 1 0 .708l-2.5 2.5a.5.5 0 1 1-.708-.708L10.793 3H8z"/>
+            <path d="M8.5 5.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .146.354l1.75 1.75a.5.5 0 1 0 .708-.708L8.5 7.793V5.5z"/>
+          </svg>
+          Reset Resume
+        </button>
+        <button id="sel-btn-clear" class="sel-btn" type="button">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+          </svg>
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <!-- Row 4: Disk statistics (async-loaded) -->
+    <div id="disk-stats" class="disk-stats is-hidden" aria-live="polite">
+      <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M6 .5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM9.5 1h-2v2h2V1zM6 4.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM9.5 5h-2v2h2V5zM6 8.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM9.5 9h-2v2h2V9zM2 .5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM5.5 1h-2v2h2V1zM2 4.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM5.5 5h-2v2h2V5zM2 8.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM5.5 9h-2v2h2V9zM10 .5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM13.5 1h-2v2h2V1zM10 4.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM13.5 5h-2v2h2V5zM10 8.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 .5.5v3a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-3zM13.5 9h-2v2h2V9z"/>
+      </svg>
+      <span class="disk-stats-label">Disk:</span>
+      <span id="disk-stats-value" class="disk-stats-value"></span>
+    </div>
+
+  </header><!-- /#app-header -->
+
+
+  <!-- ═══════════════════════════════════════════
+       MAIN CONTENT
+  ═══════════════════════════════════════════ -->
+  <main id="app-main" class="app-main">
+
+    <!-- Index page: directory listing -->
+    <section id="index-page" class="page is-hidden">
+      <p id="empty-folder" class="empty-notice is-hidden"></p>
+      <table id="uploaders-table" class="uploaders-table is-hidden">
+        <thead>
+          <tr>
+            <th class="col-icon" colspan="2">Name</th>
+            <th class="col-progress">Progress</th>
+          </tr>
+        </thead>
+        <tbody id="uploaders-body"></tbody>
+      </table>
+      <table id="paths-table" class="paths-table is-hidden">
+        <thead id="paths-thead"></thead>
+        <tbody id="paths-tbody"></tbody>
+      </table>
+    </section>
+
+    <!-- Editor / viewer page -->
+    <section id="editor-page" class="page is-hidden">
+      <p id="not-editable" class="not-editable is-hidden"></p>
+      <textarea id="editor" class="editor is-hidden" aria-label="File editor" spellcheck="false"></textarea>
+    </section>
+
+  </main><!-- /#app-main -->
+
+
+  <!-- ═══════════════════════════════════════════
+       MOBILE: PUBLIC LINK BOTTOM SHEET
+  ═══════════════════════════════════════════ -->
+  <div id="publink-backdrop" class="publink-backdrop is-hidden" aria-hidden="true"></div>
+  <div id="publink-sheet" class="publink-sheet is-hidden" role="dialog" aria-modal="true" aria-label="Public link">
+    <div class="publink-sheet-handle" aria-hidden="true"></div>
+    <div class="publink-sheet-body">
+      <a id="publink-sheet-url" class="publink-sheet-url" target="_blank" rel="noopener noreferrer"></a>
+      <div class="publink-sheet-actions">
+        <button id="publink-sheet-copy" class="publink-action-btn" type="button">
+          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+          </svg>
+          Copy link
+        </button>
+        <button id="publink-sheet-curl" class="publink-action-btn" type="button">Copy curl</button>
+        <button id="publink-sheet-wget" class="publink-action-btn" type="button">Copy wget</button>
+        <a id="publink-sheet-play" class="publink-action-btn is-hidden" target="_blank" rel="noopener noreferrer">
+          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/><path d="M6.271 5.055a.5.5 0 0 1 .52.038l3.5 2.5a.5.5 0 0 1 0 .814l-3.5 2.5A.5.5 0 0 1 6 10.5v-5a.5.5 0 0 1 .271-.445z"/></svg>
+          Open in player
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server-injected data (base64 JSON) -->
+  <template id="index-data">__INDEX_DATA__</template>
+  <script src="__ASSETS_PREFIX__index.js"></script>
+</body>
+
+</html>

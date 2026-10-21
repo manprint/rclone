@@ -89,25 +89,20 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: bug B-A001 — trovato verificando T-A003 prima del primo run della CI del fork (stessa richiesta utente: "chiaramente anche i test").
+- Active scope: task T-A003 (CI del fork), riaperta nella verifica prima del push.
 - Scope result: COMPLETE
-- Type: bug
-- ID / attempt: B-A001 / 1
-- Status: CLOSED (unit:B-A001:1)
-- Intent: i test del package `webui` e gli asset incorporati nel binario devono essere identici su Windows, dove il checkout dei runner GitHub usa `core.autocrlf=true`.
-- Riproduzione: `git -c core.autocrlf=true clone` del repository, `RCLONE_CONFIG=/notfound go test ./webui/` → `TestAssetsMatchSource` FAIL (3 hash diversi da `SOURCE`): `index.js`, `overlay.js`, `SOURCE` estratti con CRLF. Atteso: PASS, asset byte per byte uguali a superdufs. Effetto in CI: job `windows` (`make quicktest`) rosso e binari Windows della release con asset CRLF.
-- Causa: nessun attributo di fine riga per `webui/`; upstream ha lo stesso problema risolto per `lib/http/templates/**` (`text eol=lf` in `.gitattributes`).
+- Type: task
+- ID / attempt: T-A003 / 2
+- Status: CLOSED (unit:T-A003:2)
+- Intent: la ricetta delle point release nel README presupponeva un tag `X.Y.0-webui.N` già esistente (oggi non ce n'è nessuno): forma generica con `git merge-base main upstream/master`, che è esattamente il footprint del fork, provata sulla release upstream attuale `v1.75.2`.
 - Assigned: Opus (agent-1)
-- Mini-plan:
-  - S1 NEW `webui/.gitattributes` (dentro il footprint, `.gitattributes` upstream intatto): `assets/** -text` (byte esatti, come `SOURCE` richiede), `overlay/** text eol=lf`, `scripts/*.sh text eol=lf`.
-  - S2 regressione: lo stesso clone CRLF con il fix → `go test ./webui/` PASS e asset senza CRLF; suite e footprint sul repo.
-  - S3 STATE, commit.
+- Mini-plan: S1 README "Release del fork" (ricetta generica, esempio `v1.75.2`, conflitti sulle 3 righe); S2 prova in clone di scratch; S3 STATE, commit.
 - Done: S1–S3 con evidenza.
 - Current step: none (S1–S3 fatti)
 - Next action: nessuna nello scope. Fuori scope, solo su conferma dell'utente: push di `main`, abilitazione di Actions nel fork, `gh workflow disable` dei 5 workflow upstream, primo run di `fork build`
 - Next eligible plan unit: none
-- Unit base: d18d74e02; branch: main; owned changes: `webui/.gitattributes`, STATE
-- Repo state: B-A001 committata in locale su d18d74e02 (T-A003), nessuna delle due pushata; pulito salvo `.serena/`
+- Unit base: 4f9018b56; branch: main; owned changes: `webui/README.md`, STATE
+- Repo state: T-A003 (1 e 2) e B-A001 committate in locale su 1ef5d8ec5 (= origin/main), non pushate; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -244,6 +239,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | task | T-A002 / 1 | 1 | Opus (agent-1) | `webui/assets/SOURCE` (`repo:` generico, sha256 invariati), `webui/scripts/sync-assets.sh` (`repo:` da `SUPERDUFS_REPO` o nome generico, mai l'URL della copia locale), `webui/README.md` (link a dufs, nota su SOURCE, layout del fork `manprint/rclone` ramo `main`), `docs/plans/001_plan-WebdavSuperUI/*` (percorsi locali → `<repo>`, `<superdufs>`, `golangci-lint`) | `git grep` dei riferimenti privati vuoto; `TestAssets*`/`TestAPISurface*` ok; shellcheck pulito; G-FOOT ok. Storia dei 22 commit del fork riscritta con `git filter-repo --replace-text` (scelta utente; commit upstream intatti, base 81e7372f6 invariata; backup locale non pubblicato `backup/pre-rewrite-feat-webdav-frontend`): `git log -p` del fork senza riferimenti privati, albero identico al backup salvo questa riga; SHA citati nei documenti rimappati dalla commit-map | unit:T-A002:1 |
 | task | T-A003 / 1 | 1 | Opus (agent-1) | NEW `webui/scripts/gen-ci.py` (genera `.github/workflows/fork-build.yml`, `fork-docker-image.yml`, `fork-docker-plugin.yml` da `build.yml`, `build_publish_docker_image.yml`, `build_publish_docker_plugin.yml` con sostituzioni ancorate al testo upstream; `--check`), i 3 workflow generati; `webui/scripts/check-footprint.sh` (ammette `.github/workflows/fork-*.yml`), `webui/scripts/sync-upstream.sh` (`UPSTREAM_REF`, rigenera e committa i workflow dopo il merge), `webui/README.md` (sezione "CI del fork": workflow, differenze da upstream, attivazione, release `vX.Y.Z-webui.N`, point release su ramo `vX.Y-webui`). Scelte: upstream intatti (nessun conflitto ai merge); binari = comandi di `make ci_beta`/`ci_upload` senza upload → artifact; release = `make tarball vendorball` + checksum (firmati con `GPG_PRIVATE_KEY` se presente) + `gh release` come `bin/upload-github`; immagini ghcr + tag `X.Y`/`X`/`latest` per i tag del fork; Docker Hub e plugin solo con `DOCKERHUB_USERNAME`; controllo del tag (unico, `VERSION` = `vX.Y.Z`, tag upstream esistente) prima dei binari e della release; footprint della CI contro la point release upstream sui rami stable del fork. `winget.yml`/`notify.yml` senza equivalente (pubblicano per rclone) | §7 T-A003 | unit:T-A003:1 |
 | bug | B-A001 / 1 | 1 | Opus (agent-1) | NEW `webui/.gitattributes` (`assets/** -text`, `overlay/** text eol=lf`, `scripts/*.sh text eol=lf`). Causa: checkout con `core.autocrlf=true` (runner Windows) → asset CRLF, hash diversi da `SOURCE` e asset CRLF nei binari Windows; `.gitattributes` upstream intatto | riproduzione: clone `core.autocrlf=true` → `TestAssetsMatchSource` FAIL (3 hash); con il fix: asset sha256 identici al repo, `go test ./webui/` ok; `git ls-files --eol` indice già LF (nessuna rinormalizzazione); G-FOOT ok | unit:B-A001:1 |
+| task | T-A003 / 2 | 1 | Opus (agent-1) | `webui/README.md` ("Release del fork": ricetta delle point release con `git diff --binary "$(git merge-base main upstream/master)" main`, valida anche senza tag del fork precedenti; esempio `v1.75.2`; conflitti sulle 3 righe di `webdav.go`) | §7 point release v1.75.2 | unit:T-A003:2 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -268,6 +264,7 @@ none — B-A001 chiusa (unit:B-A001:1).
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| point release v1.75.2 (T-A003 / 2) | clone di scratch: `git switch -c v1.75-webui v1.75.2`, `git diff --binary $(git merge-base main origin/master) main \| git apply --3way --index`, `gen-ci.py`, tag `v1.75.2-webui.1` | pass | apply senza conflitti (`webdav.go` 3 righe applicate); `gen-ci.py` ok sui workflow di v1.75.2 (`fork-build.yml` rigenerato); `go build`, vet ok; `go test ./webui/... ./cmd/serve/webdav/` ok (webui 9s, webdav 58s); footprint contro `v1.75.2` OK; controllo del tag ok; `smoke.sh` → `smoke OK` | 4f9018b56 | 2026-10-21 |
 | regressione CRLF (B-A001) | `git -c core.autocrlf=true clone` + `RCLONE_CONFIG=/notfound go test -count=1 ./webui/` | pass | senza fix: `TestAssetsMatchSource` FAIL, `index.js`/`overlay.js`/`SOURCE` con CRLF; con `webui/.gitattributes`: file LF, sha256 degli asset identici, `ok webui` | working tree B-A001 su d18d74e02 | 2026-10-21 |
 | generatore (T-A003) | `python3 webui/scripts/gen-ci.py --check`; `actionlint .github/workflows/fork-*.yml` | pass | file aggiornati; actionlint: nessun errore oltre a shellcheck, conteggi SC di `fork-build.yml` identici a `build.yml` upstream; diff con gli upstream limitato alle regole | working tree T-A003 | 2026-10-21 |
 | deploy + release simulati (T-A003) | clone di scratch, finta release upstream `v1.76.0`, merge, tag `v1.76.0-webui.1`; script dei passi estratti dal YAML con PyYAML; `BUILD_FLAGS='-include "^linux/amd64"' GOTAGS=cmount` | pass | controllo tag ok; `rclone-v1.76.0-webui.1-linux-amd64.{zip,deb,rpm}` + copie `beta-latest` escluse dall'artifact; `version.txt` = `rclone v1.76.0-webui.1`; `make tarball vendorball` → `rclone-v1.76.0-webui.1.tar.gz` e `-vendor.tar.gz`; MD5/SHA1/SHA256SUMS in chiaro; 2 tag su HEAD → errore; `v1.75.2-webui.1` con `VERSION` v1.76.0 → errore | working tree T-A003 | 2026-10-21 |

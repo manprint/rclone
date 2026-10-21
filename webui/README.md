@@ -717,18 +717,22 @@ porta `VERSION` alla versione in sviluppo. Al fork vanno spinti solo i suoi tag:
 su `origin` produrrebbe binari e immagini del fork con il numero di una release upstream.
 
 Le point release upstream (`vX.Y.Z` con Z > 0) stanno sul ramo `vX.Y-stable`, non su `master`, quindi non
-si uniscono a `main`. Per una release del fork si crea un ramo dalla release upstream e ci si applicano
-le modifiche del fork, cioè la differenza tra la release `X.Y.0` e il suo tag del fork:
+si uniscono a `main`; lo stesso vale per l'ultima release upstream quando `main` è già oltre. Per una
+release del fork si crea un ramo dalla release upstream e ci si applicano le modifiche del fork, cioè la
+differenza tra l'ultimo commit di `master` unito a `main` e `main`:
 
 ```bash
 git fetch upstream --tags
-git switch -c v1.76-webui v1.76.1
-git diff --binary v1.76.0 v1.76.0-webui.1 | git apply --3way --index
+git switch -c v1.75-webui v1.75.2
+git diff --binary "$(git merge-base main upstream/master)" main | git apply --3way --index
 python3 webui/scripts/gen-ci.py && git add .github/workflows
-git commit -m "webui: add the web UI of serve webdav to v1.76.1"
-git tag -a v1.76.1-webui.1 -m "rclone v1.76.1-webui.1"
-git push origin v1.76-webui v1.76.1-webui.1
+git commit -m "webui: add the web UI of serve webdav to v1.75.2"
+git tag -a v1.75.2-webui.1 -m "rclone v1.75.2-webui.1"
+git push origin v1.75-webui v1.75.2-webui.1
 ```
 
 `gen-ci.py` rigenera i workflow da quelli della release upstream. Su un ramo così il job `webui` controlla
-il footprint rispetto alla release upstream di `VERSION` invece che rispetto a `master`.
+il footprint rispetto alla release upstream di `VERSION` invece che rispetto a `master`. Il codice del
+fork viene da `main`, quindi da un `master` più recente della release: la CI del tag lo compila e lo
+testa sulla release prima di pubblicare. Se `git apply` lascia conflitti (di solito le 3 righe di
+`cmd/serve/webdav/webdav.go`), si risolvono come in un merge.

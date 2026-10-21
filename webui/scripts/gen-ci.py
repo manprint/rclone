@@ -25,7 +25,7 @@ UPSTREAM_URL = "https://github.com/rclone/rclone.git"
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
 
-# Release tags of the fork, see webui/README.md
+# Release tags of the fork, see fork-doc/ci-e-release.md
 TAG_RE = r"^v[0-9]+\.[0-9]+\.[0-9]+-webui\.[0-9]+$"
 RETENTION_DAYS = 14
 
@@ -313,7 +313,7 @@ def gen_build(makefile, docker):
           repo=$GITHUB_REPOSITORY
           if ! gh release view "$TAG" --repo "$repo" > /dev/null 2>&1; then
             notes=$(mktemp)
-            echo "This is the $TAG release of the rclone fork with the web UI of serve webdav, see webui/README.md." > "$notes"
+            echo "This is the $TAG release of the rclone fork with the web UI of serve webdav, see https://github.com/$repo/blob/$TAG/fork-doc/README.md." > "$notes"
             gh release create "$TAG" --repo "$repo" --title "rclone $TAG" --notes-file "$notes" --draft=true
           fi
           for build in build/*; do

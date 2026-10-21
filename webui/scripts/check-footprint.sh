@@ -18,7 +18,7 @@ MB=$(git merge-base HEAD "$BASE")
 fail=0
 # Only changes to tracked files count (staged and working tree included):
 # untracked files are not part of the fork until committed.
-allowed='^(webui/|docs/plans/|\.github/workflows/fork-[^/]*\.yml$|cmd/serve/webdav/[^/]*_webui[^/]*\.go$|cmd/serve/webdav/webdav\.go$)'
+allowed='^(webui/|fork-doc/|\.github/workflows/fork-[^/]*\.yml$|cmd/serve/webdav/[^/]*_webui[^/]*\.go$|cmd/serve/webdav/webdav\.go$)'
 while IFS= read -r file; do
 	if ! [[ $file =~ $allowed ]]; then
 		echo "footprint: file outside the fork footprint: $file" >&2

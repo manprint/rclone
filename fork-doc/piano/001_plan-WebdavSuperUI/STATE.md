@@ -89,20 +89,22 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: task T-A003 (CI del fork), riaperta nella verifica prima del push.
-- Scope result: COMPLETE
-- Type: task
-- ID / attempt: T-A003 / 2
-- Status: CLOSED (unit:T-A003:2)
-- Intent: la ricetta delle point release nel README presupponeva un tag `X.Y.0-webui.N` già esistente (oggi non ce n'è nessuno): forma generica con `git merge-base main upstream/master`, che è esattamente il footprint del fork, provata sulla release upstream attuale `v1.75.2`.
+- Active scope: bug B-A002 — trovato dal primo run della CI del fork (richiesta utente "chiaramente anche i test"), durante T-A004.
+- Scope result: RUNNING
+- Type: bug
+- ID / attempt: B-A002 / 1
+- Status: OPEN (fix committato, in attesa della verifica sul job `windows`)
+- Intent: le posizioni di riproduzione devono funzionare su Windows anche con salvataggi e letture contemporanee.
+- Riproduzione: job `windows` della CI (run 39622874319, commit `b4f5c514b`): `TestResumeStoreRoundTrip/Concurrent` FAIL, 280 errori `open …\resume\<key>.json: The process cannot access the file because it is being used by another process` e `rename …tmp …json` con lo stesso errore. Atteso: PASS come su Linux e macOS.
+- Causa: su Windows un file aperto non si può sostituire (`os.Rename`) né cancellare (`os.Remove`); `resumeStore` non serializzava `load` rispetto a `save`/`clear`.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 README "Release del fork" (ricetta generica, esempio `v1.75.2`, conflitti sulle 3 righe); S2 prova in clone di scratch; S3 STATE, commit.
-- Done: S1–S3 con evidenza.
-- Current step: none (S1–S3 fatti)
-- Next action: nessuna nello scope. Fuori scope, solo su conferma dell'utente: push di `main`, abilitazione di Actions nel fork, `gh workflow disable` dei 5 workflow upstream, primo run di `fork build`
+- Mini-plan: S1 `sync.RWMutex` `files` in `resumeStore` (lettura sotto RLock, rename e remove sotto Lock); S2 `go test -race -count=3 -run TestResume ./webui/`, vet e compilazione dei test per windows, lint; S3 limite noto per più processi sulla stessa `--webui-resume-dir` (in `fork-doc/uso.md`, T-A004); S4 commit WIP, push, verifica sul job `windows` del run successivo (il test non si riproduce su Linux: rename POSIX), poi chiusura.
+- Done: job `windows` verde con `TestResumeStoreRoundTrip` eseguito.
+- Current step: S4
+- Next action: attendere il run della CI sul commit di B-A002 e leggere `TestResumeStoreRoundTrip` nel log del job `windows`
 - Next eligible plan unit: none
-- Unit base: 4f9018b56; branch: main; owned changes: `webui/README.md`, STATE
-- Repo state: T-A003 (1 e 2) e B-A001 committate in locale su 1ef5d8ec5 (= origin/main), non pushate; pulito salvo `.serena/`
+- Unit base: commit di T-A004; branch: main; owned changes: `webui/resume.go`, STATE
+- Repo state: T-A004 e B-A002 committate e pushate su origin/main
 
 ## 2. Feature context and readiness
 
@@ -240,6 +242,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | task | T-A003 / 1 | 1 | Opus (agent-1) | NEW `webui/scripts/gen-ci.py` (genera `.github/workflows/fork-build.yml`, `fork-docker-image.yml`, `fork-docker-plugin.yml` da `build.yml`, `build_publish_docker_image.yml`, `build_publish_docker_plugin.yml` con sostituzioni ancorate al testo upstream; `--check`), i 3 workflow generati; `webui/scripts/check-footprint.sh` (ammette `.github/workflows/fork-*.yml`), `webui/scripts/sync-upstream.sh` (`UPSTREAM_REF`, rigenera e committa i workflow dopo il merge), `webui/README.md` (sezione "CI del fork": workflow, differenze da upstream, attivazione, release `vX.Y.Z-webui.N`, point release su ramo `vX.Y-webui`). Scelte: upstream intatti (nessun conflitto ai merge); binari = comandi di `make ci_beta`/`ci_upload` senza upload → artifact; release = `make tarball vendorball` + checksum (firmati con `GPG_PRIVATE_KEY` se presente) + `gh release` come `bin/upload-github`; immagini ghcr + tag `X.Y`/`X`/`latest` per i tag del fork; Docker Hub e plugin solo con `DOCKERHUB_USERNAME`; controllo del tag (unico, `VERSION` = `vX.Y.Z`, tag upstream esistente) prima dei binari e della release; footprint della CI contro la point release upstream sui rami stable del fork. `winget.yml`/`notify.yml` senza equivalente (pubblicano per rclone) | §7 T-A003 | unit:T-A003:1 |
 | bug | B-A001 / 1 | 1 | Opus (agent-1) | NEW `webui/.gitattributes` (`assets/** -text`, `overlay/** text eol=lf`, `scripts/*.sh text eol=lf`). Causa: checkout con `core.autocrlf=true` (runner Windows) → asset CRLF, hash diversi da `SOURCE` e asset CRLF nei binari Windows; `.gitattributes` upstream intatto | riproduzione: clone `core.autocrlf=true` → `TestAssetsMatchSource` FAIL (3 hash); con il fix: asset sha256 identici al repo, `go test ./webui/` ok; `git ls-files --eol` indice già LF (nessuna rinormalizzazione); G-FOOT ok | unit:B-A001:1 |
 | task | T-A003 / 2 | 1 | Opus (agent-1) | `webui/README.md` ("Release del fork": ricetta delle point release con `git diff --binary "$(git merge-base main upstream/master)" main`, valida anche senza tag del fork precedenti; esempio `v1.75.2`; conflitti sulle 3 righe di `webdav.go`) | §7 point release v1.75.2 | unit:T-A003:2 |
+| task | T-A004 / 1 | 1 | Opus (agent-1) | NEW `fork-doc/` alla radice: `README.md` (indice, principio additivo, mappa dei percorsi del fork), `uso.md`, `sviluppo.md`, `build.md`, `ci-e-release.md` (sezioni di `webui/README.md` spostate senza riscrivere il testo, salvo i percorsi relativi, lo stato dell'attivazione e un limite noto da B-A002), `storia.md` (cronologia ed esito del primo run della CI), `analisi/` (richiesta originale e analisi iniziale senza riferimenti privati); piano spostato con `git mv` da `docs/plans/001_plan-WebdavSuperUI/` a `fork-doc/piano/001_plan-WebdavSuperUI/` (stessa profondità); `webui/README.md` ridotto a rimando; `webui/surface_test.go` (messaggio → `fork-doc/sviluppo.md`); `gen-ci.py` (commento, note della release con link a `fork-doc/README.md`) + `fork-build.yml` rigenerato; `check-footprint.sh` (`docs/plans/` → `fork-doc/`). Scelta su richiesta dell'utente: la documentazione del fork esce da `docs/` (cartella upstream) | link checker 42 link relativi (file e ancore) 0 rotti; `git grep` riferimenti privati vuoto; G-FOOT ok; `go test ./webui/` ok; `gen-ci.py --check` ok; shellcheck pulito; contenuto spostato confrontato riga per riga con il README originale | unit:T-A004:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -253,17 +256,19 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 | Path/hunks | Existing changes to preserve | Unit changes | Owning unit |
 |------------|------------------------------|--------------|-------------|
 | `.serena/` | untracked, estraneo | nessuna | — |
-| `docs/plans/001_plan-WebdavSuperUI/` | — | piano | plan 001 |
+| `fork-doc/piano/001_plan-WebdavSuperUI/` (in `docs/plans/` fino a T-A004) | — | piano | plan 001 |
 | `cmd/serve/webdav/webdav.go` | upstream | solo 3 righe `// fork:webui` | 0.1 |
 
 ## 6. In-flight checkpoint
 
-none — B-A001 chiusa (unit:B-A001:1).
+B-A002 in verifica: fix committato e pushato, attende il job `windows` della CI.
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| primo run CI del fork (T-A003) | push di `b4f5c514b` su origin/main; Actions abilitato, workflow upstream disattivati (`gh workflow disable`) | parziale | `fork build` (run 39622874319): verdi `webui`, `linux`, `linux_386`, `go1.26`, `mac_arm64`, `other_os`, `lint`, `android-all`; `windows` FAIL (`TestResumeStoreRoundTrip/Concurrent`, → B-A002); `mac_amd64` cancellato da GitHub ("The job was not acquired by Runner of type hosted", capacità macOS); `release` saltato (non è un tag). `fork Build & Push Docker Images` (run 39622874276) success: tag `main`, `beta`, `sha-b4f5c51`, 5 piattaforme, pull anonimo ok (pacchetto pubblico); `docker run ghcr.io/manprint/rclone:main version` → `rclone v1.76.0-beta.10633.b4f5c514b.main`, 18 flag `--webui` nell'help. I run dei workflow upstream sul push hanno saltato tutti i job | `b4f5c514b` | 2026-10-21 |
+| fix resume (B-A002) | `go test -race -count=3 -run TestResume ./webui/`; `go test ./webui/...`; `GOOS=windows go vet` + `go test -c`; golangci-lint | pass (locale) | race ok ×3; webui ok; compilazione windows ok; 0 issue. Verifica Windows = job `windows` del run successivo | working tree B-A002 | 2026-10-21 |
 | point release v1.75.2 (T-A003 / 2) | clone di scratch: `git switch -c v1.75-webui v1.75.2`, `git diff --binary $(git merge-base main origin/master) main \| git apply --3way --index`, `gen-ci.py`, tag `v1.75.2-webui.1` | pass | apply senza conflitti (`webdav.go` 3 righe applicate); `gen-ci.py` ok sui workflow di v1.75.2 (`fork-build.yml` rigenerato); `go build`, vet ok; `go test ./webui/... ./cmd/serve/webdav/` ok (webui 9s, webdav 58s); footprint contro `v1.75.2` OK; controllo del tag ok; `smoke.sh` → `smoke OK` | 4f9018b56 | 2026-10-21 |
 | regressione CRLF (B-A001) | `git -c core.autocrlf=true clone` + `RCLONE_CONFIG=/notfound go test -count=1 ./webui/` | pass | senza fix: `TestAssetsMatchSource` FAIL, `index.js`/`overlay.js`/`SOURCE` con CRLF; con `webui/.gitattributes`: file LF, sha256 degli asset identici, `ok webui` | working tree B-A001 su d18d74e02 | 2026-10-21 |
 | generatore (T-A003) | `python3 webui/scripts/gen-ci.py --check`; `actionlint .github/workflows/fork-*.yml` | pass | file aggiornati; actionlint: nessun errore oltre a shellcheck, conteggi SC di `fork-build.yml` identici a `build.yml` upstream; diff con gli upstream limitato alle regole | working tree T-A003 | 2026-10-21 |

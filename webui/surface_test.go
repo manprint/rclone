@@ -151,7 +151,7 @@ func surfaceDiffMessage(kind string, got, want []string) string {
 		return ""
 	}
 	return fmt.Sprintf("%s used by assets/index.js changed\n  new (not handled by the server?): %v\n  vanished (no longer used?): %v\n"+
-		"see webui/README.md, section Sincronizzazione, for how to handle an update of the assets",
+		"see fork-doc/sviluppo.md, section Sincronizzazione, for how to handle an update of the assets",
 		kind, added, vanished)
 }
 
@@ -199,7 +199,7 @@ s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 		msg := surfaceDiffMessage("query parameters", []string{"a", "new"}, []string{"a", "gone"})
 		assert.Contains(t, msg, "new (not handled by the server?): [new]")
 		assert.Contains(t, msg, "vanished (no longer used?): [gone]")
-		assert.Contains(t, msg, "webui/README.md")
+		assert.Contains(t, msg, "fork-doc/sviluppo.md")
 		assert.Contains(t, msg, "Sincronizzazione")
 	})
 }

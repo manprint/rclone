@@ -699,7 +699,7 @@ jobs:
           repo=$GITHUB_REPOSITORY
           if ! gh release view "$TAG" --repo "$repo" > /dev/null 2>&1; then
             notes=$(mktemp)
-            echo "This is the $TAG release of the rclone fork with the web UI of serve webdav, see webui/README.md." > "$notes"
+            echo "This is the $TAG release of the rclone fork with the web UI of serve webdav, see https://github.com/$repo/blob/$TAG/fork-doc/README.md." > "$notes"
             gh release create "$TAG" --repo "$repo" --title "rclone $TAG" --notes-file "$notes" --draft=true
           fi
           for build in build/*; do

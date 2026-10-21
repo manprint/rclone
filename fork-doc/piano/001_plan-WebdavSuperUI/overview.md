@@ -1,6 +1,6 @@
 # WebdavSuperUI — Plan overview
 
-Redatto il 2026-10-21 da Opus 5.5 (supervisore). Cartella: `docs/plans/001_plan-WebdavSuperUI/`.
+Redatto il 2026-10-21 da Opus 5.5 (supervisore). Cartella: `fork-doc/piano/001_plan-WebdavSuperUI/` (fino a T-A004 era `docs/plans/001_plan-WebdavSuperUI/`).
 L'esecuzione parte da [STATE.md](STATE.md): readiness e progresso live sono solo lì.
 Analisi di origine (fuori repo): `ANALISI_WEBUI.md`.
 

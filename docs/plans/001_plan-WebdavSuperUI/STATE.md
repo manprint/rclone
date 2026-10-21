@@ -89,24 +89,25 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: task T-A003 — richiesta utente 2026-10-21: "si prepara la ci solo del fork, ma deve produrre binari ed immagini esattamente come quello originale" + "chiaramente anche i test". Scelta utente: release del fork con tag `vX.Y.Z-webui.N`.
+- Active scope: bug B-A001 — trovato verificando T-A003 prima del primo run della CI del fork (stessa richiesta utente: "chiaramente anche i test").
 - Scope result: COMPLETE
-- Type: task
-- ID / attempt: T-A003 / 1
-- Status: CLOSED (unit:T-A003:1)
-- Intent: workflow GitHub Actions solo del fork, generati dai workflow upstream così da restare identici a ogni sincronizzazione: stessi test (matrice build/quicktest/race/librclone/compile_all, lint, android), stessi binari (`bin/cross-compile.go`: zip/deb/rpm per tutte le piattaforme), stesse immagini (`Dockerfile` upstream, 5 piattaforme, tag di metadata-action) e stesso plugin Docker; pubblicazione su artifact (rami), GitHub Release (tag `v*-webui.*`), ghcr.io e, se configurato, Docker Hub.
+- Type: bug
+- ID / attempt: B-A001 / 1
+- Status: CLOSED (unit:B-A001:1)
+- Intent: i test del package `webui` e gli asset incorporati nel binario devono essere identici su Windows, dove il checkout dei runner GitHub usa `core.autocrlf=true`.
+- Riproduzione: `git -c core.autocrlf=true clone` del repository, `RCLONE_CONFIG=/notfound go test ./webui/` → `TestAssetsMatchSource` FAIL (3 hash diversi da `SOURCE`): `index.js`, `overlay.js`, `SOURCE` estratti con CRLF. Atteso: PASS, asset byte per byte uguali a superdufs. Effetto in CI: job `windows` (`make quicktest`) rosso e binari Windows della release con asset CRLF.
+- Causa: nessun attributo di fine riga per `webui/`; upstream ha lo stesso problema risolto per `lib/http/templates/**` (`text eol=lf` in `.gitattributes`).
 - Assigned: Opus (agent-1)
 - Mini-plan:
-  - S1 `webui/scripts/gen-ci.py` (solo stdlib): legge `build.yml`, `build_publish_docker_image.yml`, `build_publish_docker_plugin.yml` e scrive `.github/workflows/fork-*.yml` con sostituzioni letterali ancorate (ognuna deve trovare il numero atteso di occorrenze, altrimenti errore con il nome della regola); `--check` esce 1 se i file generati non corrispondono. Regole: nome del workflow; `github.repository == 'rclone/rclone'` → repo del fork; deploy `make ci_beta` → stesso `cross-compile.go -release beta-latest -git-log` senza upload + `upload-artifact`; android `make ci_upload` → gzip + `upload-artifact`; tag upstream recuperati per `LAST_TAG`; job `webui` (footprint contro upstream/master, `RCLONE_WEBUI=false`, smoke, `gen-ci.py --check`, shellcheck); job `release` sui tag `v*-webui.*` (artifact → `build/`, senza `beta-latest`, `make tarball`, `make vendorball`, MD5/SHA1/SHA256SUMS firmati con GPG se c'è il secret, `gh release` come `bin/upload-github`); immagine: label URL del fork, Docker Hub solo con i secret, tag `1.76`/`1`/`latest` per i tag `-webui.N`, dispatch del plugin a fine tag; plugin: secret Docker Hub unificati, utente = owner, solo `workflow_dispatch`.
-  - S2 `check-footprint.sh` ammette `.github/workflows/fork-*.yml`; `sync-upstream.sh` accetta `UPSTREAM_REF` (merge di un tag upstream) e rigenera i workflow (commit automatico se cambiano).
-  - S3 verifiche locali: `actionlint` sui generati; `gen-ci.py --check`; comandi shell dei passi nuovi provati in locale (cross-compile ridotto, tarball/vendorball/sums su tag temporaneo in un clone di scratch); test webui/webdav compilati per windows/darwin e eseguiti con `GOARCH=386`.
-  - S4 README (sezione CI del fork, flusso di release, secret opzionali, workflow upstream da disattivare nel fork), ledger, commit. Push e attivazione di Actions solo dopo conferma dell'utente.
-- Done: S1–S4 con evidenza; workflow upstream intatti; footprint OK.
-- Current step: none (S1–S4 fatti)
+  - S1 NEW `webui/.gitattributes` (dentro il footprint, `.gitattributes` upstream intatto): `assets/** -text` (byte esatti, come `SOURCE` richiede), `overlay/** text eol=lf`, `scripts/*.sh text eol=lf`.
+  - S2 regressione: lo stesso clone CRLF con il fix → `go test ./webui/` PASS e asset senza CRLF; suite e footprint sul repo.
+  - S3 STATE, commit.
+- Done: S1–S3 con evidenza.
+- Current step: none (S1–S3 fatti)
 - Next action: nessuna nello scope. Fuori scope, solo su conferma dell'utente: push di `main`, abilitazione di Actions nel fork, `gh workflow disable` dei 5 workflow upstream, primo run di `fork build`
 - Next eligible plan unit: none
-- Unit base: 1ef5d8ec5; branch: main; owned changes: `webui/scripts/gen-ci.py`, `.github/workflows/fork-*.yml`, `webui/scripts/check-footprint.sh`, `webui/scripts/sync-upstream.sh`, `webui/README.md`, STATE
-- Repo state: T-A003 committata in locale su 1ef5d8ec5 (= origin/main), non pushata; pulito salvo `.serena/`
+- Unit base: d18d74e02; branch: main; owned changes: `webui/.gitattributes`, STATE
+- Repo state: B-A001 committata in locale su d18d74e02 (T-A003), nessuna delle due pushata; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -242,6 +243,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | task | T-A001 / 1 | 1 | Opus (agent-1) | NEW `webui/justfile` (build, image, image-for, image-oci, image-push, binaries, binary, clean), NEW `webui/docker/Dockerfile` (stage build su `$BUILDPLATFORM` con tag `cmount` come le release upstream, binary, rootfs con `apk --root --arch --no-scripts` e solo i pacchetti assenti dalla base, image senza `RUN`), NEW `webui/docker/Dockerfile.dockerignore`; `webui/README.md` (Build → "Con `just` e Docker", tabella del codice). Scelte: tutto sotto `webui/` (footprint invariato, nessun file upstream: `Dockerfile` e `.gitignore` intatti); `go_version` dalla direttiva `go` di go.mod; alpine 3.24; output in `build/webui` (già ignorata); niente QEMU sull'host → nessun `RUN` nello stage finale; macOS senza cgo (niente `rclone mount`, resta `nfsmount`) e Windows senza risorsa di versione, documentati | §7 T-A001; `image-push` non eseguito (pubblica su un registro) | unit:T-A001:1 |
 | task | T-A002 / 1 | 1 | Opus (agent-1) | `webui/assets/SOURCE` (`repo:` generico, sha256 invariati), `webui/scripts/sync-assets.sh` (`repo:` da `SUPERDUFS_REPO` o nome generico, mai l'URL della copia locale), `webui/README.md` (link a dufs, nota su SOURCE, layout del fork `manprint/rclone` ramo `main`), `docs/plans/001_plan-WebdavSuperUI/*` (percorsi locali → `<repo>`, `<superdufs>`, `golangci-lint`) | `git grep` dei riferimenti privati vuoto; `TestAssets*`/`TestAPISurface*` ok; shellcheck pulito; G-FOOT ok. Storia dei 22 commit del fork riscritta con `git filter-repo --replace-text` (scelta utente; commit upstream intatti, base 81e7372f6 invariata; backup locale non pubblicato `backup/pre-rewrite-feat-webdav-frontend`): `git log -p` del fork senza riferimenti privati, albero identico al backup salvo questa riga; SHA citati nei documenti rimappati dalla commit-map | unit:T-A002:1 |
 | task | T-A003 / 1 | 1 | Opus (agent-1) | NEW `webui/scripts/gen-ci.py` (genera `.github/workflows/fork-build.yml`, `fork-docker-image.yml`, `fork-docker-plugin.yml` da `build.yml`, `build_publish_docker_image.yml`, `build_publish_docker_plugin.yml` con sostituzioni ancorate al testo upstream; `--check`), i 3 workflow generati; `webui/scripts/check-footprint.sh` (ammette `.github/workflows/fork-*.yml`), `webui/scripts/sync-upstream.sh` (`UPSTREAM_REF`, rigenera e committa i workflow dopo il merge), `webui/README.md` (sezione "CI del fork": workflow, differenze da upstream, attivazione, release `vX.Y.Z-webui.N`, point release su ramo `vX.Y-webui`). Scelte: upstream intatti (nessun conflitto ai merge); binari = comandi di `make ci_beta`/`ci_upload` senza upload → artifact; release = `make tarball vendorball` + checksum (firmati con `GPG_PRIVATE_KEY` se presente) + `gh release` come `bin/upload-github`; immagini ghcr + tag `X.Y`/`X`/`latest` per i tag del fork; Docker Hub e plugin solo con `DOCKERHUB_USERNAME`; controllo del tag (unico, `VERSION` = `vX.Y.Z`, tag upstream esistente) prima dei binari e della release; footprint della CI contro la point release upstream sui rami stable del fork. `winget.yml`/`notify.yml` senza equivalente (pubblicano per rclone) | §7 T-A003 | unit:T-A003:1 |
+| bug | B-A001 / 1 | 1 | Opus (agent-1) | NEW `webui/.gitattributes` (`assets/** -text`, `overlay/** text eol=lf`, `scripts/*.sh text eol=lf`). Causa: checkout con `core.autocrlf=true` (runner Windows) → asset CRLF, hash diversi da `SOURCE` e asset CRLF nei binari Windows; `.gitattributes` upstream intatto | riproduzione: clone `core.autocrlf=true` → `TestAssetsMatchSource` FAIL (3 hash); con il fix: asset sha256 identici al repo, `go test ./webui/` ok; `git ls-files --eol` indice già LF (nessuna rinormalizzazione); G-FOOT ok | unit:B-A001:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -260,12 +262,13 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — T-A003 chiusa (unit:T-A003:1).
+none — B-A001 chiusa (unit:B-A001:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| regressione CRLF (B-A001) | `git -c core.autocrlf=true clone` + `RCLONE_CONFIG=/notfound go test -count=1 ./webui/` | pass | senza fix: `TestAssetsMatchSource` FAIL, `index.js`/`overlay.js`/`SOURCE` con CRLF; con `webui/.gitattributes`: file LF, sha256 degli asset identici, `ok webui` | working tree B-A001 su d18d74e02 | 2026-10-21 |
 | generatore (T-A003) | `python3 webui/scripts/gen-ci.py --check`; `actionlint .github/workflows/fork-*.yml` | pass | file aggiornati; actionlint: nessun errore oltre a shellcheck, conteggi SC di `fork-build.yml` identici a `build.yml` upstream; diff con gli upstream limitato alle regole | working tree T-A003 | 2026-10-21 |
 | deploy + release simulati (T-A003) | clone di scratch, finta release upstream `v1.76.0`, merge, tag `v1.76.0-webui.1`; script dei passi estratti dal YAML con PyYAML; `BUILD_FLAGS='-include "^linux/amd64"' GOTAGS=cmount` | pass | controllo tag ok; `rclone-v1.76.0-webui.1-linux-amd64.{zip,deb,rpm}` + copie `beta-latest` escluse dall'artifact; `version.txt` = `rclone v1.76.0-webui.1`; `make tarball vendorball` → `rclone-v1.76.0-webui.1.tar.gz` e `-vendor.tar.gz`; MD5/SHA1/SHA256SUMS in chiaro; 2 tag su HEAD → errore; `v1.75.2-webui.1` con `VERSION` v1.76.0 → errore | working tree T-A003 | 2026-10-21 |
 | footprint e tag su rami (T-A003) | clone di scratch: upstream `v1.76.0` + startdev, `v1.76-stable` con `v1.76.1`; ramo `v1.76-webui` con `git diff --binary v1.76.0 v1.76.0-webui.1 \| git apply --3way --index` | pass | main al tag: base `upstream/master`, footprint OK, tag ok; main dopo il merge di master (VERSION v1.77.0): OK; `v1.76.1-webui.1`: base `v1.76.1`, footprint OK, tag ok; stesso ramo contro `upstream/master` → fuori footprint `README.md`, `VERSION` (atteso) | working tree T-A003 | 2026-10-21 |

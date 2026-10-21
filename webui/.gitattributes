@@ -1,0 +1,5 @@
+# The assets are checked against SOURCE and embedded in the binary, so
+# they must be byte-identical on every OS whatever core.autocrlf says
+assets/** -text
+overlay/** text eol=lf
+scripts/*.sh text eol=lf

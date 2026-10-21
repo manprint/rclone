@@ -106,8 +106,9 @@ func (u *UI) baseSlash() string {
 
 // PreAuth returns the handler for requests which need no authentication
 //
-// This is the assets and the downloads with a valid token, for which a
-// request must carry no credentials. Everything else is passed to next.
+// This is the assets, the public links and the downloads with a valid
+// token, for which a request must carry no credentials. Everything else is
+// passed to next.
 func (u *UI) PreAuth(next http.Handler) http.Handler {
 	assets := u.publicWrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveAsset(w, r, strings.TrimPrefix(u.relPath(r), "/"+assetsPrefix))
@@ -115,6 +116,10 @@ func (u *UI) PreAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(u.relPath(r), "/"+assetsPrefix) {
 			assets.ServeHTTP(w, r)
+			return
+		}
+		if h := u.publicDownload(r); h != nil {
+			h.ServeHTTP(w, r)
 			return
 		}
 		if h := u.tokenDownload(r); h != nil {

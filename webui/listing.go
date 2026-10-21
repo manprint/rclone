@@ -126,6 +126,10 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	sortPathItems(items, query.Get("sort"), query.Get("order"), query.Has("sort"))
+	publinkEnabled := u.publinksEnabled() && u.allowed(remote)
+	for i := 0; i < len(items) && !publinkEnabled; i++ {
+		publinkEnabled = items[i].PublinkToken != nil
+	}
 
 	var user *string
 	if name, ok := u.lookupUser(r); ok {
@@ -144,6 +148,7 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		User:                          user,
 		Paths:                         items,
 		PlaybackResumeEnabled:         u.resume != nil,
+		PublinkEnabled:                publinkEnabled,
 		EnableDataStats:               u.opt.DiskStats,
 		ShowConcurrentUploadsSettings: u.opt.UploadSettings,
 	}
@@ -181,7 +186,9 @@ func (u *UI) writeData(w http.ResponseWriter, r *http.Request, remote string, da
 // pathItem returns the listing entry for the node, which is in the
 // directory dir of the VFS
 func (u *UI) pathItem(VFS *vfs.VFS, entry vfs.Node, dir string) PathItem {
-	return u.entryItem(VFS, entry, dir, true)
+	item := u.entryItem(VFS, entry, dir, true)
+	item.PublinkToken = u.publinkToken(path.Join(dir, item.Name))
+	return item
 }
 
 // entryItem is pathItem which counts the entries of a directory only if

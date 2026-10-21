@@ -92,16 +92,16 @@ segue il prefisso di directory upstream per i propri commit di unità).
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
 - Scope result: RUNNING
 - Type: sub-phase
-- ID / attempt: 3.1 / 1
+- ID / attempt: 3.2 / 1
 - Status: CLOSED
-- Intent: chiavi HMAC, `?tokengen`, download senza credenziali con `?token=` in PreAuth.
+- Intent: link pubblici: `publink_token`/`publink_enabled` nel listing e nella ricerca, ramo `/@public/<tok>/<path>` in PreAuth (viewer, zip, file, view, resume), README "Link di download e link pubblici".
 - Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1) — review sicurezza prima della chiusura
-- File / unit heading: phase_04.md — "3.1 Chiavi, ?tokengen, download con ?token= in PreAuth"
+- File / unit heading: phase_04.md — "3.2 Link pubblici: token nel listing e `/@public/`"
 - Current step: chiusura
-- Next action: commit `sub-phase(3.1)`, poi aprire 3.2.
-- Next eligible plan unit: 3.2 / phase_04.md
-- Unit base: 13ca8c311; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
-- Repo state: HEAD 13ca8c311; pulito salvo `.serena/`
+- Next action: commit `sub-phase(3.2)`, poi aprire P3.
+- Next eligible plan unit: P3 / phase_04.md
+- Unit base: 333020b3c; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
+- Repo state: HEAD 333020b3c; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -225,6 +225,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 2.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/search.go`, `webui/search_test.go`; `webui/listing.go` (dispatch zip → q → disk-stats → listing; `entryItem` con `countDirs`), README "Ricerca e statistiche", `TestWebUISearch`, `TestWebUIDiskStats`. Deviazioni accettate: `search` riceve un costruttore di item (stesso tipo/mtime/resume del listing); `q` prevale su `disk-stats`/`json`. Nota Opus: `VFS.Statfs` riempie i valori mancanti (total ~1 PiB, used 0) per backend senza About → il ramo 404 "unknown" non è raggiungibile; la pagina mostra "Non disponibile" con used 0 (accettato) | G-U22a 1/1, G-U22b 2/2 (verificati da Opus), suite/lint/footprint verdi (worker) | unit:2.2:1 |
 | phase-close | P2 / 1 | 1 | Opus (agent-1) | `webui/README.md` (`--disable-zip` vale anche per gli zip della UI), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (zip `/d/` con nomi relativi annidati, zip=multi, ricerca annidata); review §7 | unit:P2:1 |
 | sub-phase | 3.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/token.go`, `webui/files.go`, `webui/token_test.go`; `webui/ui.go` (`keys` in `New`, `tokenDownload` in PreAuth, `serveTokengen` primo nel dispatch Handler, `relPath` rifiuta `/pfxfoo` con base `/pfx`), `TestPreAuthBoundaries` (17 sottocasi). Deviazioni accettate: `?tokengen` con token non verificabili (proxy o senza auth) → 200 corpo vuoto (lo script superdufs chiede il token se c'è un utente; passare a upstream metterebbe il file nell'URL); `TokenExpiry ≤ 0` → token scaduti subito (da documentare); sandbox per estensione come `sandboxActive` (HTML senza estensione non sandboxato = stesso comportamento upstream → limite noto) | G-U31a 4/4, G-U31b 17 sottocasi (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (Authorization, remote nella firma, IsProxy, base64 strict) fanno fallire i test (worker); review sicurezza Opus §7 | unit:3.1:1 |
+| sub-phase | 3.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/public.go`, `webui/public_test.go`; `webui/ui.go` (ramo `/@public/` in PreAuth dopo gli asset e prima di `?token=`), `webui/listing.go` + `webui/search.go` (`publink_token`, `publink_enabled`), `webui/resume.go` (`serveResumeRemote`), README "Link di download e link pubblici" (+ riga flag `--webui-publink-paths`), e2e `TestPublinkBoundaries` (23 sottocasi) e `TestPublicPathTraversal`. Deviazioni accettate: `AllowArchive = !DisableZip` nel viewer (il JS ne ha bisogno per i pulsanti zip; zip limitato al sottoalbero consentito); path non canonico (`pub//a.txt`) → 404; resume solo su file (cartella → 404), `ResumePosition` nascosta nel viewer; breadcrumb sopra la cartella condivisa → 404 e nella pagina `?view` verso pagine autenticate (stesso schema superdufs, documentato) | G-U32a 4/4, G-U32b 2/2 (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (walk antenati, `allowed`, `IsProxy`) fanno fallire i test (worker) | unit:3.2:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -243,7 +244,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — 3.1 chiusa (review sicurezza PASS), in commit.
+none — 3.2 chiusa (review sicurezza PASS), in commit.
 
 ## 7. Verification and reviews
 
@@ -272,12 +273,15 @@ none — 3.1 chiusa (review sicurezza PASS), in commit.
 | G-LINT/G-FOOT (P2) | vedi §3 | pass | 0 issues; footprint OK | 927499e01 | 2026-10-21 |
 | G-U31a/b | vedi §3 | pass | 4 top-level PASS + TestPreAuthBoundaries (17 sottocasi PASS) | working tree 3.1 | 2026-10-21 |
 | G-LINT/G-FOOT (3.1) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.1 | 2026-10-21 |
+| G-U32a/b | vedi §3 | pass | 4 top-level PASS + TestPublinkBoundaries (23 sottocasi) + TestPublicPathTraversal | working tree 3.2 | 2026-10-21 |
+| G-LINT/G-FOOT (3.2) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.2 | 2026-10-21 |
 | binario reale (P2) | build + serve, richieste python | pass | `/d/?zip` → sub/, sub/deep/, sub/deep/match.txt, x.txt; `?zip=multi&paths=["d"]` → d/… corretti; `?q=match&json` → d/sub/deep/match.txt | 927499e01 | 2026-10-21 |
 | binario reale (P1) | build + serve, richieste python | pass | PUT /new/sub/f.txt 201; MOVE /src.txt→/dst 412 e dst/keep.txt intatto; PUT senza Origin con padre mancante 409; CHECKAUTH 200; ?edit 200 | 72bf56919 | 2026-10-21 |
 | binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
+| 3.2 sicurezza | Opus (agent-1) | rev 1 / diff 3.2 su 333020b3c | I-5: `/@public/` intercettato solo con link abilitati (`PublinkPaths` non vuoto, `!IsProxy`) e solo GET/HEAD; ordine dei controlli: formato → CheckPath (I-4, `%2e%2e` decodificato e rifiutato) → path canonico → token (HMAC del remote o di un antenato fino a `""`, `hmac.Equal`, `pub` non copre `pubx`) prima di qualsiasi Stat (nessun oracolo di esistenza) → Stat (404) → `allowed` (403); `allowed` chiuso per prefisso quindi zip/listing del viewer non escono dal sottoalbero; viewer senza token, senza utente, permessi false; redirect costruito da parti validate (`url.URL`); `publicWrap` + `Referrer-Policy: no-referrer` su tutte le risposte; unica scrittura = archivio resume locale (solo file, chiave per percorso, crescita limitata dai file consentiti; `resume-get` anonimo espone la posizione salvata, accettato); nessuna scrittura sul remote; log solo Debugf senza token. README: header `Authorization` ignorato su `@public` (contenuto pubblico), log upstream con token nel path per richieste WebDAV a `@public` | PASS |
 | 3.1 sicurezza | Opus (agent-1) | rev 1 / diff 3.1 su 13ca8c311 | I-5: PreAuth serve senza credenziali solo asset o GET/HEAD con `token` valido, `UsingAuth && !IsProxy`, nessun header Authorization, path sotto baseurl + CheckPath, firma HMAC-SHA256 (chiave derivata, etichette separate token/publink) su user\0remote\0expMs confrontata con `hmac.Equal`, parsing stretto (exp canonico, base64 Strict, user senza NUL); token valido solo per il remote esatto (non figli/padri); dir solo con `zip` (selezione `zip=multi` limitata ai figli da `parseSelection`), file senza `/` finale; `?tokengen` solo dopo auth; risposta via `publicWrap` + `Referrer-Policy: no-referrer`; log senza chiavi né token. Note README per 3.2: secret diversi per server con utenti/dati diversi (token portabili tra server con lo stesso secret), preferire `RCLONE_WEBUI_SECRET` al flag (visibile nei processi), `--webui-token-expiry ≤ 0` disattiva di fatto i link, HTML senza estensione non sandboxato | PASS |
 | P2 | Opus (agent-1) | rev 1 / c45e3d544..927499e01 + README | I-4 su selezione zip (segmenti, CheckPath, Stat prima degli header), limiti ricerca e contesto, streaming zip con errori solo loggati, deviazione CreateZip (§8) verificata sul codice upstream, disk-stats con Statfs riempito; README Ricerca e statistiche + `--disable-zip` | PASS |
 | P1 | Opus (agent-1) | rev 1 / b895eab2f..72bf56919 + README | ordine dispatch Handler (CheckPath → write → resume → edit → listing → CSP → next); I-4 (TestWebUIPathTraversal, destRemote), I-6 (TestWebUIDavClientUnchanged); D9/D10 su test e binario; resume: permessi 0700/0600, scrittura atomica, nessuna scrittura sul remote; README Ripresa riproduzione + Comportamento client WebDAV con limiti | PASS |
@@ -310,7 +314,7 @@ none
 | 2.1 | phase_03.md | P1 | DONE | 1 | G-U21a 2/2, G-U21b 1/1; unit:2.1:1 |
 | 2.2 | phase_03.md | 2.1 | DONE | 1 | G-U22a 1/1, G-U22b 2/2; unit:2.2:1 |
 | 3.1 | phase_04.md | P2 | DONE | 1 | G-U31a 4/4, G-U31b 1/1 (17 sottocasi); review sicurezza PASS; unit:3.1:1 |
-| 3.2 | phase_04.md | 3.1 | TODO | 1 | — |
+| 3.2 | phase_04.md | 3.1 | DONE | 1 | G-U32a 4/4, G-U32b 2/2 (23 sottocasi); review sicurezza PASS; unit:3.2:1 |
 | 4.1 | phase_05.md | P3 | TODO | 1 | — |
 | 4.2 | phase_05.md | 4.1 | TODO | 1 | — |
 
@@ -340,7 +344,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | TestParseSelection, TestWriteSelectionZip, TestWebUIZip | 2.1 | G-U21a/b | PASS | §7 |
 | TestSearchLimits, TestWebUISearch, TestWebUIDiskStats | 2.2 | G-U22a/b | PASS | §7 |
 | TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | PASS | §7 |
-| TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | TODO | — |
+| TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | PASS | §7 |
 | TestAPISurfaceLock, TestOverlayNode, smoke.sh | 4.1 | G-U41, G-SMOKE | TODO | — |
 
 ### Documentation
@@ -350,7 +354,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | webui/README.md — Interfaccia web | 0.2 | DONE | sezione presente |
 | webui/README.md — Ripresa riproduzione / Comportamento client WebDAV | 1.3 / P1 | DONE | entrambe le sezioni presenti |
 | webui/README.md — Ricerca e statistiche | 2.2 | DONE | sezione presente |
-| webui/README.md — Link di download e link pubblici | 3.2 | TODO | — |
+| webui/README.md — Link di download e link pubblici | 3.2 | DONE | sezione presente (token, link pubblici, segreto e chiavi, limiti noti) |
 | webui/README.md — completo | 4.2 | TODO | — |
 
 ### Audits

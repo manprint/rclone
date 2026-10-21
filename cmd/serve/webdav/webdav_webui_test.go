@@ -1777,3 +1777,614 @@ func mustRead(t *testing.T, name string) string {
 	require.NoError(t, err)
 	return string(data)
 }
+
+// publicFixture makes the directory served by the tests of public links
+func publicFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"pub/a.txt":           "aaa",
+		"pub/v.mp4":           "video",
+		"pub/page.html":       "<script>1</script>",
+		"pub/sub/b.txt":       "bbb",
+		"pub/we ird#d/c.txt":  "ccc",
+		"pubx/d.txt":          "ddd",
+		"priv/c.txt":          "secret",
+		"top.txt":             "top",
+		"pub2.txt":            "pub2",
+		"priv/pub/shadow.txt": "shadow",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0777))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0666))
+	}
+	return dir
+}
+
+// publicSetup returns the options which turn on authentication and the
+// public links to paths
+func publicSetup(paths ...string) (func(*Options), func(*webui.Options)) {
+	return func(opt *Options) {
+			opt.Auth.BasicUser = testUser
+			opt.Auth.BasicPass = testPass
+		}, func(o *webui.Options) {
+			o.PublinkPaths = fs.CommaSepList(paths)
+		}
+}
+
+// TestPublinkBoundaries checks the tokens in the listings and what the
+// public links serve without credentials
+func TestPublinkBoundaries(t *testing.T) {
+	dir := publicFixture(t)
+	withAuth, withPaths := publicSetup("pub")
+	resumeDir := t.TempDir()
+	base := startWebUIDir(t, dir, withAuth, func(o *webui.Options) {
+		withPaths(o)
+		o.Resume = true
+		o.ResumeDir = resumeDir
+	}, nil)
+	creds := map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(testUser+":"+testPass))}
+	wrong := map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(testUser+":wrong"))}
+
+	// The options of the server above are still set
+	noPaths := func(o *webui.Options) { o.PublinkPaths = nil }
+
+	// tokens returns the public link tokens of the items of a listing
+	tokens := func(t *testing.T, target string) (map[string]string, webui.IndexData) {
+		t.Helper()
+		resp, body := doRequest(t, "GET", target, creds)
+		require.Equal(t, http.StatusOK, resp.StatusCode, target)
+		data := jsonData(t, body)
+		out := map[string]string{}
+		for _, item := range data.Paths {
+			if item.PublinkToken != nil {
+				out[item.Name] = *item.PublinkToken
+			}
+		}
+		return out, data
+	}
+	rootTokens, rootData := tokens(t, base+"?json")
+	pubTokens, pubData := tokens(t, base+"pub/?json")
+	require.NotEmpty(t, rootTokens["pub"])
+	pubTok := rootTokens["pub"]
+	aTok := pubTokens["a.txt"]
+	require.NotEmpty(t, aTok)
+	pub := base + "@public/" + pubTok + "/"
+	status := func(method, target string, header map[string]string) int {
+		resp, _ := doRequest(t, method, target, header)
+		return resp.StatusCode
+	}
+
+	t.Run("ListingTokens", func(t *testing.T) {
+		assert.Equal(t, map[string]string{"pub": pubTok}, rootTokens)
+		assert.True(t, rootData.PublinkEnabled)
+		assert.NotEmpty(t, pubTokens["sub"])
+		assert.NotEmpty(t, pubTokens["we ird#d"])
+		assert.Len(t, pubTokens, 5)
+		assert.True(t, pubData.PublinkEnabled)
+		// The token of a directory is the one of the link, and its files have their own
+		assert.NotEqual(t, pubTok, aTok)
+
+		// Search results carry them too
+		_, body := doRequest(t, "GET", base+"?q=b.txt&json", creds)
+		items := jsonData(t, body).Paths
+		require.Len(t, items, 1)
+		assert.Equal(t, "pub/sub/b.txt", items[0].Name)
+		require.NotNil(t, items[0].PublinkToken)
+		assert.Equal(t, http.StatusOK, status("GET", base+"@public/"+*items[0].PublinkToken+"/pub/sub/b.txt", nil))
+		_, body = doRequest(t, "GET", base+"?q=c.txt&json", creds)
+		for _, item := range jsonData(t, body).Paths {
+			assert.Equal(t, item.Name != "priv/c.txt", item.PublinkToken != nil, item.Name)
+		}
+
+		// The HTML page has the same data
+		_, body = doRequest(t, "GET", base, mergeHeaders(creds, browserHeaders))
+		assert.True(t, pageData(t, body).PublinkEnabled)
+
+		// A directory with nothing to share has no links
+		_, data := tokens(t, base+"priv/?json")
+		assert.False(t, data.PublinkEnabled)
+		assert.Empty(t, data.Paths[0].PublinkToken)
+	})
+
+	t.Run("NoCredentials", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", pub+"pub/sub/b.txt", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "bbb", body)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"pub/sub/b.txt", nil))
+
+		resp, body = doRequest(t, "HEAD", pub+"pub/sub/b.txt", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "3", resp.Header.Get("Content-Length"))
+		assert.Empty(t, body)
+
+		resp, body = doRequest(t, "GET", pub+"pub/a.txt", map[string]string{"Range": "bytes=1-2"})
+		assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
+		assert.Equal(t, "aa", body)
+	})
+
+	t.Run("ReferrerPolicy", func(t *testing.T) {
+		// The token is in the URL of every reply, whatever the status
+		resp, _ := doRequest(t, "GET", base+"@public/bad/pub/a.txt", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		resp, _ = doRequest(t, "GET", pub+"priv/c.txt", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		resp, _ = doRequest(t, "GET", pub+"pub", nil)
+		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+	})
+
+	t.Run("OutsideTheLink", func(t *testing.T) {
+		for _, p := range []string{"priv/c.txt", "pubx/d.txt", "pubx", "priv", "top.txt", "pub2.txt", "priv/pub/shadow.txt", "pub/missing.txt", "missing", ""} {
+			assert.Equal(t, http.StatusNotFound, status("GET", pub+p, nil), p)
+			assert.Equal(t, http.StatusNotFound, status("HEAD", pub+p, nil), p)
+		}
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+pubTok, nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/", nil))
+	})
+
+	t.Run("FileTokenIsForOneFile", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK, status("GET", base+"@public/"+aTok+"/pub/a.txt", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+aTok+"/pub/sub/b.txt", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+aTok+"/pub/", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+aTok+"/pub/v.mp4", nil))
+	})
+
+	t.Run("BadTokens", func(t *testing.T) {
+		for _, tok := range []string{"bad", "", strings.ToUpper(pubTok), pubTok[:31], pubTok + "0", "%2e%2e"} {
+			assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+tok+"/pub/a.txt", nil), tok)
+		}
+		// A download token isn't a public link token
+		resp, dl := doRequest(t, "GET", base+"pub/a.txt?tokengen", creds)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+dl+"/pub/a.txt", nil))
+	})
+
+	t.Run("OnlyReads", func(t *testing.T) {
+		for _, method := range []string{"PUT", "DELETE", "PATCH", "POST", "MOVE", "COPY", "PROPFIND", "MKCOL", "OPTIONS"} {
+			resp, _ := send(t, method, pub+"pub/a.txt", "x", map[string]string{"Destination": base + "pub/new.txt"})
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, method)
+			resp, _ = send(t, method, pub+"pub/", "x", nil)
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, method)
+		}
+		assert.Equal(t, "aaa", mustRead(t, filepath.Join(dir, "pub", "a.txt")))
+		assert.NoFileExists(t, filepath.Join(dir, "pub", "new.txt"))
+		// Nor with the write operations of the page
+		resp, _ := send(t, "PUT", pub+"pub/new.txt", "x", withOrigin(nil))
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.NoFileExists(t, filepath.Join(dir, "pub", "new.txt"))
+	})
+
+	t.Run("WrongCredentials", func(t *testing.T) {
+		// A browser may send the credentials it has cached
+		resp, body := doRequest(t, "GET", pub+"pub/a.txt", wrong)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "aaa", body)
+		assert.Equal(t, http.StatusOK, status("GET", pub+"pub/a.txt", creds))
+		assert.Equal(t, http.StatusOK, status("GET", pub+"pub/?json", wrong))
+		// The link is for what the token says whoever asks
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"priv/c.txt", creds))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"pub/a.txt", wrong))
+	})
+
+	t.Run("DirectoryRedirect", func(t *testing.T) {
+		resp, _ := doRequest(t, "GET", pub+"pub", nil)
+		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		assert.Equal(t, "/@public/"+pubTok+"/pub/", resp.Header.Get("Location"))
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+
+		resp, _ = doRequest(t, "GET", pub+"pub?json&sort=size", nil)
+		assert.Equal(t, "/@public/"+pubTok+"/pub/?json&sort=size", resp.Header.Get("Location"))
+		resp, _ = doRequest(t, "HEAD", pub+"pub/sub", nil)
+		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		assert.Equal(t, "/@public/"+pubTok+"/pub/sub/", resp.Header.Get("Location"))
+
+		// A name which needs escaping stays a path
+		resp, _ = doRequest(t, "GET", pub+"pub/we%20ird%23d", nil)
+		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		assert.Equal(t, "/@public/"+pubTok+"/pub/we%20ird%23d/", resp.Header.Get("Location"))
+
+		// It can't be made to leave the server
+		for _, p := range []string{"/@public/" + pubTok + "//evil.example/pub", "/@public/" + pubTok + "///evil.example/pub"} {
+			resp, _ = doRequest(t, "GET", strings.TrimSuffix(base, "/")+p, nil)
+			assert.NotEqual(t, http.StatusFound, resp.StatusCode, p)
+		}
+	})
+
+	t.Run("DirectoryViewer", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", pub+"pub/?json", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		data := jsonData(t, body)
+		assert.Equal(t, "Index", data.Kind)
+		assert.Equal(t, "/@public/"+pubTok+"/", data.URIPrefix)
+		assert.Equal(t, "/pub", data.Href)
+		assert.True(t, data.DirExists)
+		assert.False(t, data.AllowUpload)
+		assert.False(t, data.AllowDelete)
+		assert.False(t, data.AllowSearch)
+		assert.False(t, data.Auth)
+		assert.Nil(t, data.User)
+		assert.False(t, data.PlaybackResumeEnabled)
+		assert.False(t, data.PublinkEnabled)
+		assert.False(t, data.PublinkIsViewer)
+		assert.False(t, data.EnableDataStats)
+		assert.False(t, data.ShowConcurrentUploadsSettings)
+		assert.Equal(t, []string{"sub", "we ird#d", "a.txt", "page.html", "v.mp4"}, names(data.Paths))
+		assert.NotContains(t, body, "publink_token")
+		for _, item := range data.Paths {
+			assert.Nil(t, item.PublinkToken, item.Name)
+			assert.Nil(t, item.ResumePosition, item.Name)
+		}
+
+		// The page is the same data in HTML
+		resp, body = doRequest(t, "GET", pub+"pub/", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+		page := pageData(t, body)
+		assert.Equal(t, data, page)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+
+		// It has no resume positions to show even if some are saved
+		assert.Equal(t, http.StatusNoContent, status("GET", pub+"pub/v.mp4?resume-save=5", nil))
+		_, body = doRequest(t, "GET", pub+"pub/?json", nil)
+		for _, item := range jsonData(t, body).Paths {
+			assert.Nil(t, item.ResumePosition, item.Name)
+		}
+		assert.Equal(t, http.StatusNoContent, status("GET", pub+"pub/v.mp4?resume-clear", nil))
+
+		// Below the link and sorted
+		_, body = doRequest(t, "GET", pub+"pub/sub/?json", nil)
+		data = jsonData(t, body)
+		assert.Equal(t, "/pub/sub", data.Href)
+		assert.Equal(t, "/@public/"+pubTok+"/", data.URIPrefix)
+		assert.Equal(t, []string{"b.txt"}, names(data.Paths))
+		_, body = doRequest(t, "GET", pub+"pub/?json&sort=size&order=desc", nil)
+		assert.Equal(t, []string{"page.html", "v.mp4", "a.txt", "we ird#d", "sub"}, names(jsonData(t, body).Paths))
+
+		// The listing is the link's, whatever the page asks
+		_, body = doRequest(t, "GET", pub+"pub/?json&q=b.txt", nil)
+		assert.Len(t, jsonData(t, body).Paths, 5)
+		_, body = doRequest(t, "GET", pub+"pub/?json&disk-stats", nil)
+		assert.Equal(t, []string{"sub", "we ird#d", "a.txt", "page.html", "v.mp4"}, names(jsonData(t, body).Paths))
+
+		resp, _ = doRequest(t, "HEAD", pub+"pub/?json", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("Zip", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", pub+"pub/?zip", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/zip", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		entries := zipEntries(t, body)
+		assert.Equal(t, "aaa", entries["a.txt"])
+		assert.Equal(t, "bbb", entries["sub/b.txt"])
+		assert.Equal(t, "ccc", entries["we ird#d/c.txt"])
+		assert.NotContains(t, entries, "priv/c.txt")
+		assert.NotContains(t, entries, "top.txt")
+
+		// Without the slash it is redirected with the query
+		resp, _ = doRequest(t, "GET", pub+"pub?zip", nil)
+		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		assert.Equal(t, "/@public/"+pubTok+"/pub/?zip", resp.Header.Get("Location"))
+		assert.Equal(t, http.StatusOK, status("HEAD", pub+"pub/?zip", nil))
+		_, body = doRequest(t, "GET", pub+"pub/?zip=multi&paths="+url.QueryEscape(`["a.txt"]`), nil)
+		assert.Equal(t, map[string]string{"a.txt": "aaa"}, zipEntries(t, body))
+		// A selection can't leave the directory
+		assert.Equal(t, http.StatusBadRequest, status("GET", pub+"pub/?zip=multi&paths="+url.QueryEscape(`["../priv/c.txt"]`), nil))
+		// And a link to a file isn't a link to its folder
+		assert.Equal(t, http.StatusNotFound, status("GET", base+"@public/"+aTok+"/pub/?zip", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"priv/?zip", nil))
+	})
+
+	t.Run("ZipDisabled", func(t *testing.T) {
+		noZipAuth := func(opt *Options) {
+			withAuth(opt)
+			opt.DisableZip = true
+		}
+		noZip := startWebUIDir(t, dir, noZipAuth, withPaths, nil)
+		tok := tokensFor(t, noZip, creds)["pub"]
+		resp, _ := doRequest(t, "GET", noZip+"@public/"+tok+"/pub/?zip", nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		// The viewer doesn't offer what it doesn't serve
+		_, body := doRequest(t, "GET", noZip+"@public/"+tok+"/pub/?json", nil)
+		assert.False(t, jsonData(t, body).AllowArchive)
+		// With zip on it does
+		_, body = doRequest(t, "GET", pub+"pub/?json", nil)
+		assert.True(t, jsonData(t, body).AllowArchive)
+	})
+
+	t.Run("ViewPage", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", pub+"pub/a.txt?view", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		data := editData(t, body)
+		assert.Equal(t, "View", data.Kind)
+		assert.Equal(t, "/pub/a.txt", data.Href)
+		assert.Equal(t, "/", data.URIPrefix)
+		assert.False(t, data.AllowUpload)
+		assert.False(t, data.AllowDelete)
+		assert.False(t, data.Auth)
+		assert.Nil(t, data.User)
+		assert.True(t, data.Editable)
+
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"priv/c.txt?view", nil))
+		// There is no edit page without credentials
+		resp, body = doRequest(t, "GET", pub+"pub/a.txt?edit", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "aaa", body)
+	})
+
+	t.Run("ActiveFilesSandboxed", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", pub+"pub/page.html", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "<script>1</script>", body)
+		assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+		resp, _ = doRequest(t, "GET", pub+"pub/a.txt", nil)
+		assert.Empty(t, resp.Header.Get("Content-Security-Policy"))
+	})
+
+	t.Run("Resume", func(t *testing.T) {
+		// Of a file, which stores only the position
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"pub/v.mp4?resume-get", nil))
+		assert.Equal(t, http.StatusNoContent, status("GET", pub+"pub/v.mp4?resume-save=12.5&duration=100", nil))
+		resp, body := doRequest(t, "GET", pub+"pub/v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, body, `"position":12.5`)
+		// It is the same position as the authenticated one
+		_, body = doRequest(t, "GET", base+"pub/?json", creds)
+		for _, item := range jsonData(t, body).Paths {
+			if item.Name == "v.mp4" {
+				require.NotNil(t, item.ResumePosition)
+				assert.Equal(t, int64(12), *item.ResumePosition)
+			}
+		}
+		assert.Equal(t, http.StatusNoContent, status("GET", pub+"pub/v.mp4?resume-clear", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"pub/v.mp4?resume-get", nil))
+
+		// Not outside the link, of a text file or without a position
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"priv/c.txt?resume-save=1", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"pub/a.txt?resume-save=1", nil))
+		assert.Equal(t, http.StatusBadRequest, status("GET", pub+"pub/v.mp4?resume-save=-1", nil))
+		// Not by other methods
+		resp, _ = send(t, "POST", pub+"pub/v.mp4?resume-save=7", "", nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Equal(t, http.StatusNotFound, status("GET", pub+"pub/v.mp4?resume-get", nil))
+
+		// Not of a directory
+		for _, q := range []string{"resume-save=1", "resume-get", "resume-clear"} {
+			assert.Equal(t, http.StatusNotFound, status("GET", pub+"pub/sub/?"+q, nil), q)
+			assert.Equal(t, http.StatusNotFound, status("GET", pub+"pub/sub?"+q, nil), q)
+		}
+		entries, err := os.ReadDir(resumeDir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("BaseURL", func(t *testing.T) {
+		pfxAuth := func(opt *Options) {
+			withAuth(opt)
+			opt.HTTP.BaseURL = "/pfx"
+		}
+		pfx := startWebUIDir(t, dir, pfxAuth, withPaths, nil)
+		tok := tokensFor(t, pfx, creds)["pub"]
+		require.NotEmpty(t, tok)
+		resp, body := doRequest(t, "GET", pfx+"@public/"+tok+"/pub/a.txt", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "aaa", body)
+
+		resp, _ = doRequest(t, "GET", pfx+"@public/"+tok+"/pub", nil)
+		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		assert.Equal(t, "/pfx/@public/"+tok+"/pub/", resp.Header.Get("Location"))
+		_, body = doRequest(t, "GET", pfx+"@public/"+tok+"/pub/?json", nil)
+		data := jsonData(t, body)
+		assert.Equal(t, "/pfx/@public/"+tok+"/", data.URIPrefix)
+		assert.Equal(t, "/pub", data.Href)
+		assert.Equal(t, http.StatusOK, status("GET", pfx+"@public/"+tok+"/pub/?zip", nil))
+		_, body = doRequest(t, "GET", pfx+"@public/"+tok+"/pub/a.txt?view", nil)
+		assert.Equal(t, "/pfx/", editData(t, body).URIPrefix)
+
+		// Outside the base URL the router or the auth answers
+		root := strings.TrimSuffix(strings.TrimSuffix(pfx, "/"), "/pfx")
+		for _, p := range []string{"/@public/" + tok + "/pub/a.txt", "/pfx@public/" + tok + "/pub/a.txt"} {
+			assert.Contains(t, []int{http.StatusUnauthorized, http.StatusNotFound}, status("GET", root+p, nil), p)
+		}
+	})
+
+	t.Run("OtherServer", func(t *testing.T) {
+		// Each server has keys of its own unless they share a secret
+		other := startWebUIDir(t, dir, withAuth, withPaths, nil)
+		assert.Equal(t, http.StatusNotFound, status("GET", other+"@public/"+pubTok+"/pub/a.txt", nil))
+		secret := func(o *webui.Options) {
+			withPaths(o)
+			o.Secret = "s3cret"
+		}
+		a := startWebUIDir(t, dir, withAuth, secret, nil)
+		b := startWebUIDir(t, dir, withAuth, secret, nil)
+		tok := tokensFor(t, a, creds)["pub"]
+		assert.Equal(t, http.StatusOK, status("GET", b+"@public/"+tok+"/pub/a.txt", nil))
+	})
+
+	t.Run("PathsAreTheLimit", func(t *testing.T) {
+		// A token which was valid for what is no longer a path is refused
+		narrow := startWebUIDir(t, dir, withAuth, func(o *webui.Options) {
+			o.PublinkPaths = fs.CommaSepList{"pub/sub"}
+			o.Secret = "s"
+		}, nil)
+		wide := startWebUIDir(t, dir, withAuth, func(o *webui.Options) {
+			o.PublinkPaths = fs.CommaSepList{"pub"}
+			o.Secret = "s"
+		}, nil)
+		tok := tokensFor(t, wide, creds)["pub"]
+		assert.Equal(t, http.StatusOK, status("GET", wide+"@public/"+tok+"/pub/a.txt", nil))
+		resp, _ := doRequest(t, "GET", narrow+"@public/"+tok+"/pub/a.txt", nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+		assert.Equal(t, http.StatusForbidden, status("GET", narrow+"@public/"+tok+"/pub/", nil))
+		assert.Equal(t, http.StatusOK, status("GET", narrow+"@public/"+tok+"/pub/sub/b.txt", nil))
+		_, body := doRequest(t, "GET", narrow+"@public/"+tok+"/pub/sub/?json", nil)
+		assert.Equal(t, []string{"b.txt"}, names(jsonData(t, body).Paths))
+	})
+
+	t.Run("RootPath", func(t *testing.T) {
+		all := startWebUIDir(t, dir, withAuth, func(o *webui.Options) { o.PublinkPaths = fs.CommaSepList{"/"} }, nil)
+		tokens := tokensFor(t, all, creds)
+		assert.Equal(t, http.StatusOK, status("GET", all+"@public/"+tokens["priv"]+"/priv/c.txt", nil))
+		assert.Equal(t, http.StatusOK, status("GET", all+"@public/"+tokens["top.txt"]+"/top.txt", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", all+"@public/"+tokens["top.txt"]+"/priv/c.txt", nil))
+		_, body := doRequest(t, "GET", all+"?json", creds)
+		assert.True(t, jsonData(t, body).PublinkEnabled)
+	})
+
+	t.Run("NoPaths", func(t *testing.T) {
+		none := startWebUIDir(t, dir, withAuth, noPaths, nil)
+		resp, body := doRequest(t, "GET", none+"?json", creds)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		data := jsonData(t, body)
+		assert.False(t, data.PublinkEnabled)
+		assert.NotContains(t, body, "publink_token")
+		assert.Equal(t, http.StatusUnauthorized, status("GET", none+"@public/"+pubTok+"/pub/a.txt", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", none+"@public/"+pubTok+"/pub/a.txt", wrong))
+	})
+
+	t.Run("NoPathsFolderNamedPublic", func(t *testing.T) {
+		// Without links the name isn't reserved
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "@public", "x"), 0777))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "@public", "x", "f.txt"), []byte("real"), 0666))
+		none := startWebUIDir(t, dir, withAuth, noPaths, nil)
+		resp, body := doRequest(t, "GET", none+"@public/x/f.txt", creds)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "real", body)
+	})
+
+	t.Run("NoAuth", func(t *testing.T) {
+		// Without authentication links are made and checked all the same
+		open := startWebUIDir(t, dir, nil, withPaths, nil)
+		tok := tokensFor(t, open, nil)["pub"]
+		require.NotEmpty(t, tok)
+		assert.Equal(t, http.StatusOK, status("GET", open+"@public/"+tok+"/pub/a.txt", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", open+"@public/"+tok+"/priv/c.txt", nil))
+		assert.Equal(t, http.StatusNotFound, status("GET", open+"@public/bad/pub/a.txt", nil))
+		assert.Equal(t, http.StatusOK, status("GET", open+"priv/c.txt", nil))
+	})
+
+	t.Run("AuthProxy", func(t *testing.T) {
+		// The links need the VFS to not depend on the user, so with an auth
+		// proxy there are none, even for a token the same secret made
+		secret := func(o *webui.Options) {
+			withPaths(o)
+			o.Secret = "s"
+		}
+		plain := startWebUIDir(t, dir, withAuth, secret, nil)
+		tok := tokensFor(t, plain, creds)["pub"]
+		require.NotEmpty(t, tok)
+		assert.Equal(t, http.StatusOK, status("GET", plain+"@public/"+tok+"/pub/a.txt", nil))
+
+		savedOpt := webui.Opt
+		t.Cleanup(func() { webui.Opt = savedOpt })
+		webui.Opt.Enabled = true
+		secret(&webui.Opt)
+		prog, err := filepath.Abs("../servetest/proxy_code.go")
+		require.NoError(t, err)
+		opt := Opt
+		opt.HTTP.ListenAddr = []string{testBindAddress}
+		proxyOpt := proxy.Opt
+		proxyOpt.AuthProxy = "go run " + prog + " " + dir
+		w, err := newWebDAV(context.Background(), nil, &opt, &vfscommon.Opt, &proxyOpt)
+		require.NoError(t, err)
+		go func() {
+			assert.NoError(t, w.Serve())
+		}()
+		t.Cleanup(func() { assert.NoError(t, w.Shutdown()) })
+		proxied := w.server.URLs()[0]
+
+		assert.Equal(t, http.StatusUnauthorized, status("GET", proxied+"@public/"+tok+"/pub/a.txt", nil))
+		// With credentials it is an ordinary path, which doesn't exist
+		assert.Equal(t, http.StatusNotFound, status("GET", proxied+"@public/"+tok+"/pub/a.txt", creds))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", proxied+"@public/"+tok+"/pub/?json", nil))
+		resp, body := doRequest(t, "GET", proxied+"?json", creds)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.False(t, jsonData(t, body).PublinkEnabled)
+		assert.NotContains(t, body, "publink_token")
+	})
+}
+
+// tokensFor returns the public link tokens of the items in the root listing
+func tokensFor(t *testing.T, base string, header map[string]string) map[string]string {
+	t.Helper()
+	resp, body := doRequest(t, "GET", base+"?json", header)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	out := map[string]string{}
+	for _, item := range jsonData(t, body).Paths {
+		if item.PublinkToken != nil {
+			out[item.Name] = *item.PublinkToken
+		}
+	}
+	return out
+}
+
+// mergeHeaders returns the union of the headers
+func mergeHeaders(headers ...map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, header := range headers {
+		for k, v := range header {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// TestPublicPathTraversal checks a public link can't be made to read
+// outside what its token covers
+func TestPublicPathTraversal(t *testing.T) {
+	dir := publicFixture(t)
+	withAuth, withPaths := publicSetup("pub")
+	base := startWebUIDir(t, dir, withAuth, withPaths, nil)
+	creds := map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(testUser+":"+testPass))}
+	tok := tokensFor(t, base, creds)["pub"]
+	require.NotEmpty(t, tok)
+	root := strings.TrimSuffix(base, "/")
+	prefix := root + "/@public/" + tok
+
+	for _, p := range []string{
+		"/pub/%2e%2e/priv/c.txt",
+		"/pub/%2E%2E/priv/c.txt",
+		"/pub/../priv/c.txt",
+		"/pub/./a.txt",
+		"/pub/sub/../../priv/c.txt",
+		"/pub/%2e%2e%2fpriv/c.txt",
+		"/pub/..%2fpriv/c.txt",
+		"/pub/%2e%2e",
+		"/pub/%2e%2e/",
+		"/%2e%2e/priv/c.txt",
+		"/pub/sub/%2e%2e/%2e%2e/priv/c.txt",
+		"/pub//..//priv/c.txt",
+		"/pub/..\\priv\\c.txt",
+		"/pub/%2e%2e%5cpriv%5cc.txt",
+		"/pub/a.txt%00/../../priv/c.txt",
+		"/%2e%2e/%2e%2e/etc/passwd",
+		"/pub//a.txt",
+		"//priv/c.txt",
+	} {
+		resp, body := doRequest(t, "GET", prefix+p, nil)
+		assert.NotEqual(t, http.StatusOK, resp.StatusCode, p)
+		assert.NotContains(t, body, "secret", p)
+		assert.NotContains(t, body, "shadow", p)
+	}
+	// A path inside the link still works
+	resp, body := doRequest(t, "GET", prefix+"/pub/sub/b.txt", nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "bbb", body)
+	// The token in a path of its own can't be used to climb either
+	resp, _ = doRequest(t, "GET", root+"/@public/%2e%2e/priv/c.txt", nil)
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode)
+	resp, _ = doRequest(t, "GET", root+"/@public/"+tok+"/../../priv/c.txt", nil)
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode)
+}

@@ -67,6 +67,7 @@ func (u *UI) searchItems(ctx context.Context, VFS *vfs.VFS, dir *vfs.Dir, remote
 	return search(ctx, dir, needle, u.opt.SearchMaxDepth, u.opt.SearchMaxResults,
 		func(entry vfs.Node, relDir string) PathItem {
 			item := u.entryItem(VFS, entry, path.Join(remote, relDir), false)
+			item.PublinkToken = u.publinkToken(path.Join(remote, relDir, item.Name))
 			item.Name = path.Join(relDir, item.Name)
 			return item
 		})

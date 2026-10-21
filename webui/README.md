@@ -22,7 +22,7 @@ con `--template` oppure con `--disable-dir-list`. Ogni flag ha la corrispondente
 | `--webui-search-max-depth` | `8` | Profondità massima della ricerca |
 | `--webui-search-max-results` | `1000` | Numero massimo di risultati della ricerca |
 | `--webui-search-timeout` | `30s` | Durata massima di una ricerca |
-| `--webui-publink-paths` | vuoto | Percorsi sotto i quali si possono creare link pubblici di download |
+| `--webui-publink-paths` | vuoto | Percorsi (e il loro contenuto) per cui si creano link pubblici di sola lettura; `/` indica tutto |
 | `--webui-secret` | vuoto | Segreto con cui sono firmati i token dell'interfaccia (sensibile) |
 | `--webui-token-expiry` | `72h` | Durata dei token di download |
 | `--webui-resume` | `false` | Ricorda la posizione di riproduzione dei file multimediali |
@@ -201,6 +201,82 @@ backend non lo supporta la VFS riporta uso `0` e uno spazio libero fittizio molt
 "Non disponibile". `--vfs-disk-space-total-size` fissa il totale; `--vfs-used-is-size` calcola l'uso sommando
 le dimensioni di tutti i file, il che costa una visita completa del remote. I valori sono tenuti in cache
 per `--dir-cache-time`.
+
+## Link di download e link pubblici
+
+### Link di download con token
+
+Con l'autenticazione attiva la pagina rende scaricabili senza credenziali i file e gli zip delle cartelle
+con un token firmato. Il browser chiede il token con `GET <percorso>?tokengen` (con le credenziali
+dell'utente; la risposta è il solo token, `text/plain` con `Cache-Control: no-store`, e `404` se il percorso
+non esiste) e usa poi `<percorso>?token=<token>`. Il token vale per quel file, o per lo zip di quella
+cartella (`?zip` e `?zip=multi`), e non per altro: non per i figli di una cartella, non per un altro file,
+non per l'elenco della cartella. Vale solo per `GET` e `HEAD`.
+
+Il token scade dopo `--webui-token-expiry` (default `72h`; un valore minore o uguale a zero fa scadere i link
+subito). Un client che invia anche un header `Authorization` è giudicato dall'autenticazione, qualunque
+sia il token. I token richiedono un'autenticazione propria del server e non funzionano con `--auth-proxy`,
+perché con il proxy la VFS dipende dall'utente: con `--auth-proxy`, o senza autenticazione, `?tokengen`
+risponde con un token vuoto e il browser scarica con le proprie credenziali.
+
+### Link pubblici
+
+`--webui-publink-paths` elenca i percorsi per cui la pagina mostra un link pubblico (separati da virgola; `/`
+indica tutto il server, una cartella copre anche tutto ciò che contiene). Nell'elenco e nei risultati di
+ricerca ogni elemento che ricade in quei percorsi ha un `publink_token`, e la colonna "Public Link" appare
+quando almeno un elemento lo ha. Il link ha la forma
+
+```
+<baseurl>/@public/<token>/<percorso>
+```
+
+e si apre senza credenziali. Il token firma il percorso: per un file vale solo per quel file, per una cartella
+vale per la cartella e per tutto il suo contenuto (non per le cartelle sopra né per quelle con un nome che
+inizia allo stesso modo: il token di `pub` non vale per `pubx`). Il link a una cartella apre una pagina di
+sola lettura (niente upload, modifica, spostamento o cancellazione, né link da creare) con il suo contenuto
+e lo zip; il link a un file lo scarica, o con `?view` apre il player. Un link a una cartella senza slash finale
+è ridiretto con `302` alla forma con lo slash. Il browser invia di solito all'`@public` anche le credenziali
+che ha in cache: sono ignorate, e il link è servito comunque.
+
+Un link pubblico è permanente: non ha scadenza. Si revoca togliendo il percorso da
+`--webui-publink-paths` (il server risponde `403` a un token valido per un percorso non più elencato) oppure
+cambiando `--webui-secret`, che invalida tutti i token. Un link per un percorso inesistente o con un token
+non valido risponde `404`, senza distinguere i due casi. Le risposte portano `Referrer-Policy: no-referrer`
+perché il token è nell'URL.
+
+I link pubblici sono spenti con `--auth-proxy` (come i token di download) e quando `--webui-publink-paths`
+è vuoto. Quando sono accesi il nome `@public` nella radice del server è riservato: una cartella reale con
+quel nome non è leggibile con `GET` o `HEAD`. Quando sono spenti il nome non è riservato.
+
+Con un link pubblico si legge soltanto: le richieste che non sono `GET` o `HEAD` non sono servite e non si
+scrive nulla sul remote. L'unica scrittura è quella delle posizioni di riproduzione (`?resume-get`,
+`?resume-save`, `?resume-clear`, sui soli file) nell'archivio locale di `--webui-resume`, chiave per
+percorso, che è lo stesso usato dalle richieste autenticate.
+
+### Segreto e chiavi
+
+Le chiavi che firmano i token di download e i link pubblici derivano da `--webui-secret`. Senza segreto sono
+casuali e valgono finché il processo vive: a ogni riavvio tutti i link smettono di funzionare. Per avere
+link stabili imposta il segreto. Conviene farlo con la variabile d'ambiente `RCLONE_WEBUI_SECRET` e non con
+il flag, perché la riga di comando è visibile agli altri utenti della macchina (`ps`). Server con utenti
+o dati diversi devono avere segreti diversi; due server con lo stesso segreto che servono gli stessi percorsi
+accettano i link l'uno dell'altro. I token di download e quelli dei link pubblici usano chiavi distinte
+derivate dallo stesso segreto, e non si scambiano.
+
+Il package non scrive nel log chiavi né token. Il log upstream delle richieste WebDAV riporta però il percorso
+delle richieste che arrivano al server WebDAV, per esempio un `PUT` autenticato a un URL `@public/<token>/...`:
+il token è nel percorso.
+
+### Limiti noti
+
+I file che il browser eseguirebbe (`.html`, `.htm`, `.xhtml`, `.svg`, `.svgz`, `.xml`, `.xsl`) sono serviti
+con `Content-Security-Policy: sandbox`, così gli script non raggiungono il server con le credenziali
+dell'utente. La scelta è per estensione: un file senza estensione il cui contenuto è HTML non è isolato
+(come in rclone upstream).
+
+Nella pagina di un link pubblico le voci del percorso in alto che stanno sopra la cartella condivisa
+(compresa la radice) puntano a URL che il token non copre e rispondono `404`; nella pagina `?view` di un
+file portano alle pagine autenticate del server, che chiedono le credenziali.
 
 ## Sincronizzazione
 

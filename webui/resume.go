@@ -248,6 +248,12 @@ func finite(f float64) bool {
 // ?resume-clear. It returns false if the request isn't one of them and must
 // be handled by the next handler.
 func (u *UI) serveResume(w http.ResponseWriter, r *http.Request) bool {
+	return u.serveResumeRemote(w, r, remoteFromPath(r.URL.Path))
+}
+
+// serveResumeRemote is serveResume for the playback position of the remote,
+// which isn't taken from the URL path
+func (u *UI) serveResumeRemote(w http.ResponseWriter, r *http.Request, remote string) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
@@ -265,7 +271,6 @@ func (u *UI) serveResume(w http.ResponseWriter, r *http.Request) bool {
 		resumeReply(w, r, http.StatusNotFound, resumeDisabledBody)
 		return true
 	}
-	remote := remoteFromPath(r.URL.Path)
 	key := resumeKeyFor(VFS, remote)
 	switch {
 	case query.Has("resume-get"):

@@ -73,7 +73,8 @@ richiesta passa all'upstream.
 ### Flag che influenzano la pagina
 
 - `--read-only`: la pagina nasconde upload e cancellazione (`allow_upload` e `allow_delete` falsi).
-- `--disable-zip`: la pagina non offre lo scarico come archivio (`allow_archive` falso).
+- `--disable-zip`: la pagina non offre lo scarico come archivio (`allow_archive` falso) e `?zip`,
+  `?zip=multi` rispondono `403`, come lo zip upstream (`?download=zip`) che lo stesso flag disattiva.
 - `--no-modtime`: le date di modifica sono `0` e la pagina lascia vuota la colonna.
 - `--template`: l'interfaccia resta spenta e si ottiene il comportamento upstream con il template scelto.
 - `--disable-dir-list`: l'interfaccia resta spenta.

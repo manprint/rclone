@@ -65,6 +65,8 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		}
 	case query.Has("download"):
 		return false
+	case query.Has("zip"):
+		// Opened from links so it needs no browser
 	case !query.Has("json") && !browser:
 		return false
 	}
@@ -91,6 +93,11 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 			RawQuery: r.URL.RawQuery,
 		}
 		http.Redirect(w, r, loc.String(), http.StatusFound)
+		return true
+	}
+
+	if query.Has("zip") {
+		u.serveZip(w, r, VFS, remote, query)
 		return true
 	}
 

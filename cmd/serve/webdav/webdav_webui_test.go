@@ -5,12 +5,15 @@
 package webdav
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1208,5 +1211,169 @@ func TestWebUIResumeEndpoints(t *testing.T) {
 		resp, _ := doRequest(t, "GET", url+"v.mp4?resume-get", nil)
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "the file, as for upstream")
 		assert.Empty(t, resp.Header.Get("Cache-Control"))
+	})
+}
+
+// zipEntries returns the contents of the zip in body by entry name
+func zipEntries(t *testing.T, body string) map[string]string {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader([]byte(body)), int64(len(body)))
+	require.NoError(t, err)
+	entries := map[string]string{}
+	for _, file := range zr.File {
+		rc, err := file.Open()
+		require.NoError(t, err)
+		data, err := io.ReadAll(rc)
+		require.NoError(t, err)
+		require.NoError(t, rc.Close())
+		entries[file.Name] = string(data)
+	}
+	return entries
+}
+
+// TestWebUIZip checks the zip downloads of directories and selections
+func TestWebUIZip(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"a.txt":         "aaa",
+		"d/b.txt":       "bbbb",
+		"d/sub/s.txt":   "s",
+		"outside/o.txt": "o",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0777))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0666))
+	}
+	base := startWebUIDir(t, dir, nil, nil, nil)
+	multi := func(paths string) string {
+		return "?zip=multi&paths=" + url.QueryEscape(paths)
+	}
+
+	t.Run("Directory", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", base+"d/?zip", nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, "application/zip", resp.Header.Get("Content-Type"))
+		assert.Equal(t, `attachment; filename=d.zip`, resp.Header.Get("Content-Disposition"))
+		assert.NotEmpty(t, resp.Header.Get("Last-Modified"))
+		entries := zipEntries(t, body)
+		assert.Equal(t, "bbbb", entries["b.txt"])
+		assert.Equal(t, "s", entries["sub/s.txt"])
+		assert.Contains(t, entries, "sub/")
+		assert.NotContains(t, entries, "a.txt")
+	})
+
+	t.Run("Root", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", base+"?zip", nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, `attachment; filename=root.zip`, resp.Header.Get("Content-Disposition"))
+		entries := zipEntries(t, body)
+		assert.Equal(t, "aaa", entries["a.txt"])
+		assert.Equal(t, "bbbb", entries["d/b.txt"])
+		assert.Equal(t, "s", entries["d/sub/s.txt"])
+		assert.Equal(t, "o", entries["outside/o.txt"])
+	})
+
+	t.Run("ForCommandLineClient", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", base+"d/?zip=", map[string]string{"User-Agent": "curl/8"})
+		assert.Equal(t, "application/zip", resp.Header.Get("Content-Type"))
+		assert.Contains(t, zipEntries(t, body), "b.txt")
+	})
+
+	t.Run("Selection", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", base+multi(`["a.txt","d"]`), nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, "application/zip", resp.Header.Get("Content-Type"))
+		assert.Equal(t, `attachment; filename=selection.zip`, resp.Header.Get("Content-Disposition"))
+		entries := zipEntries(t, body)
+		assert.Equal(t, "aaa", entries["a.txt"])
+		assert.Equal(t, "bbbb", entries["d/b.txt"])
+		assert.Equal(t, "s", entries["d/sub/s.txt"])
+		assert.Contains(t, entries, "d/")
+		assert.NotContains(t, entries, "outside/o.txt")
+	})
+
+	t.Run("SelectionInSubdirectory", func(t *testing.T) {
+		_, body := doRequest(t, "GET", base+"d/"+multi(`["sub","b.txt"]`), nil)
+		entries := zipEntries(t, body)
+		assert.Equal(t, "bbbb", entries["b.txt"])
+		assert.Equal(t, "s", entries["sub/s.txt"])
+		assert.NotContains(t, entries, "a.txt")
+	})
+
+	t.Run("Head", func(t *testing.T) {
+		for _, query := range []string{"d/?zip", multi(`["a.txt","d"]`)} {
+			resp, body := doRequest(t, "HEAD", base+query, nil)
+			assert.Equal(t, 200, resp.StatusCode, query)
+			assert.Equal(t, "application/zip", resp.Header.Get("Content-Type"), query)
+			assert.NotEmpty(t, resp.Header.Get("Content-Disposition"), query)
+			assert.Empty(t, body, query)
+		}
+	})
+
+	t.Run("HeadValidates", func(t *testing.T) {
+		resp, _ := doRequest(t, "HEAD", base+multi(`["nope"]`), nil)
+		assert.Equal(t, 404, resp.StatusCode)
+	})
+
+	t.Run("Rejected", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			query  string
+			status int
+			msg    string
+		}{
+			{"Missing", "?zip=multi", 400, "Missing paths parameter"},
+			{"NotJSON", "?zip=multi&paths=a.txt", 400, "Invalid selection payload"},
+			{"Empty", multi(`[]`), 400, "Selection is empty"},
+			{"Parent", multi(`["../x"]`), 400, "Invalid selection path"},
+			{"ParentInside", multi(`["d/../a.txt"]`), 400, "Invalid selection path"},
+			{"EncodedParent", "?zip=multi&paths=%5B%22%2e%2e%2fx%22%5D", 400, "Invalid selection path"},
+			{"Backslash", multi(`["d\\b.txt"]`), 400, "Invalid selection path"},
+			// Leading slashes are trimmed so it is relative to the directory
+			{"Absolute", "d/" + multi(`["/outside/o.txt"]`), 404, ""},
+			{"Nonexistent", multi(`["nope"]`), 404, ""},
+			{"NonexistentBelowFile", multi(`["a.txt/x"]`), 404, ""},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				resp, body := doRequest(t, "GET", base+test.query, nil)
+				assert.Equal(t, test.status, resp.StatusCode)
+				if test.msg != "" {
+					assert.Equal(t, test.msg, strings.TrimSpace(body))
+				}
+			})
+		}
+	})
+
+	t.Run("NotADirectory", func(t *testing.T) {
+		// Without the slash it is a file for the upstream handler
+		resp, body := doRequest(t, "GET", base+"a.txt?zip", nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, "aaa", body)
+	})
+
+	t.Run("DirectoryWithoutSlashRedirects", func(t *testing.T) {
+		resp, _ := doRequest(t, "GET", base+"d?zip=multi", browserHeaders)
+		assert.Equal(t, 302, resp.StatusCode)
+		assert.Equal(t, "/d/?zip=multi", resp.Header.Get("Location"))
+	})
+
+	t.Run("MultiZipMax", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, func(opt *webui.Options) { opt.MultiZipMax = 1 }, nil)
+		resp, body := doRequest(t, "GET", base+multi(`["a.txt","d"]`), nil)
+		assert.Equal(t, 400, resp.StatusCode)
+		assert.Equal(t, "Too many selected paths", strings.TrimSpace(body))
+		resp, _ = doRequest(t, "GET", base+multi(`["a.txt"]`), nil)
+		assert.Equal(t, 200, resp.StatusCode)
+	})
+
+	t.Run("DisableZip", func(t *testing.T) {
+		base := startWebUIDir(t, dir, func(opt *Options) { opt.DisableZip = true }, nil, nil)
+		for _, query := range []string{"?zip", "d/?zip", multi(`["a.txt"]`)} {
+			resp, body := doRequest(t, "GET", base+query, nil)
+			assert.Equal(t, 403, resp.StatusCode, query)
+			assert.Equal(t, "Zip downloads are disabled", strings.TrimSpace(body), query)
+		}
+		_, body := doRequest(t, "GET", base+"?json", nil)
+		assert.False(t, jsonData(t, body).AllowArchive)
 	})
 }

@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura P1.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 2.1, apertura 2.2.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -91,17 +91,17 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
 - Scope result: RUNNING
-- Type: none
-- ID / attempt: — / —
-- Status: none
-- Intent: —
-- Assigned: —; supervisor: Opus (agent-1)
-- File / unit heading: —
-- Current step: none
-- Next action: aprire 2.1 (phase_03.md §2.1) e delegarla a Sonnet.
-- Next eligible plan unit: 2.1 / phase_03.md
-- Unit base: commit di P1 (unit:P1:1); branch: feat/webdav-frontend; owned changes: —
-- Repo state: pulito salvo `.serena/`
+- Type: sub-phase
+- ID / attempt: 2.2 / 1
+- Status: OPEN
+- Intent: ricerca `?q` con limiti e `?disk-stats`.
+- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1)
+- File / unit heading: phase_03.md — "2.2 Ricerca ?q e ?disk-stats"
+- Current step: S1 (delegato)
+- Next action: attendere il worker; G-U22a/b; chiusura; poi P2.
+- Next eligible plan unit: P2 / phase_03.md
+- Unit base: commit di 2.1 (unit:2.1:1); branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
+- Repo state: pulito salvo `.serena/` dopo il commit di 2.1
 
 ## 2. Feature context and readiness
 
@@ -221,6 +221,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 1.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/edit.go`, `webui/edit_test.go`; `webui/data.go` (EditData), `webui/listing.go` (render condiviso `writeData`), `webui/ui.go` (serveWrite → serveEdit → serveListing → sandboxActive → next), test e2e. Deviazione accettata: CSP impostata dopo il rifiuto del listing (stesso effetto, nessuno Stat extra) | G-U12 3/3 (verificato da Opus), suite/lint/footprint verdi | unit:1.2:1 |
 | sub-phase | 1.3 / 1 | 1 | Sonnet (agent-2) | NEW `webui/resume.go`, `webui/resume_test.go`; `webui/ui.go` (store in `New`, `serveResume` tra serveWrite e serveEdit), `webui/listing.go` (`pathItem` riusabile dalla ricerca), README "Ripresa riproduzione", `TestWebUIResumeEndpoints`. Scelte accettate: retention ≤ 0 = conserva per sempre (documentato); record corrotto → 500 su get, ignorato nel listing; race cleanup/save sulla stessa chiave scaduta accettata (innocua) | G-U13a 4/4, G-U13b 1/1 (verificati da Opus), `-race ./webui/` ok, suite/lint/footprint verdi (worker) | unit:1.3:1 |
 | phase-close | P1 / 1 | 1 | Opus (agent-1) | `webui/README.md` (sezione "Comportamento con client WebDAV" con limiti), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (PUT annidato 201, GET contenuto, MOVE guard 412 con dst intatta, PUT senza Origin 409, CHECKAUTH 200, ?edit 200); review §7 | unit:P1:1 |
+| sub-phase | 2.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/zip.go`, `webui/zip_test.go`; `webui/listing.go` (ramo `zip` prima del listing, `download` resta upstream), `TestWebUIZip`. `serveZip(w, r, VFS, dirRemote, query)` riusabile da fase 3. Deviazioni: vedi §8 rev 1.1 (no `vfs.CreateZip`); controllo "too many" solo prima della pulizia (dopo non può crescere); zip lasciato senza central directory su errore a metà (corrotto invece che troncato plausibile) | G-U21a 2/2, G-U21b 1/1 (verificati da Opus), suite/lint/footprint verdi | unit:2.1:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -239,7 +240,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none
+claimed — 2.2 delegata a Sonnet (agent-2) dopo il commit di 2.1.
 
 ## 7. Verification and reviews
 
@@ -262,6 +263,7 @@ none
 | G-U13b | vedi §3 | pass | TestWebUIResumeEndpoints PASS | working tree 1.3 | 2026-10-21 |
 | G-PHASE (P1) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 72bf56919 + README | 2026-10-21 |
 | G-LINT/G-FOOT (P1) | vedi §3 | pass | 0 issues; footprint OK | 72bf56919 + README | 2026-10-21 |
+| G-U21a/b | vedi §3 | pass | 2 + 1 top-level PASS | working tree 2.1 | 2026-10-21 |
 | binario reale (P1) | build + serve, richieste python | pass | PUT /new/sub/f.txt 201; MOVE /src.txt→/dst 412 e dst/keep.txt intatto; PUT senza Origin con padre mancante 409; CHECKAUTH 200; ?edit 200 | 72bf56919 | 2026-10-21 |
 | binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
@@ -276,6 +278,7 @@ none
 
 | Revision | Previous decision/step | Approved replacement and reason | Supervisor | Dependents/revalidation |
 |----------|------------------------|---------------------------------|------------|------------------------|
+| 1.1 (deviazione tecnica, requisiti invariati) | phase_03.md 2.1: `?zip` = `vfs.CreateZip` | `?zip` elenca i figli e usa `writeSelectionZip` (stessi header di CreateZip). Motivo: bug upstream verificato da Opus in `vfs/zip.go` — per le sottocartelle il nome è `root + e.Path()` con `Path()` assoluto nella VFS, quindi da 2 livelli in giù i nomi raddoppiano il prefisso (`d/d/sub/`). Non correggibile in upstream (D2); possibile PR upstream separata | Opus (agent-1) | `TestWebUIZip` verifica i nomi relativi annidati; fase 3 riusa `serveZip` |
 
 ## 9. Blockers
 none
@@ -293,8 +296,8 @@ none
 | 1.1 | phase_02.md | P0 | DONE | 1 | G-U11 8/8; review focalizzata PASS; unit:1.1:1 |
 | 1.2 | phase_02.md | 1.1 | DONE | 1 | G-U12 3/3; unit:1.2:1 |
 | 1.3 | phase_02.md | 1.2 | DONE | 1 | G-U13a 4/4, G-U13b 1/1; unit:1.3:1 |
-| 2.1 | phase_03.md | P1 | TODO | 1 | — |
-| 2.2 | phase_03.md | 2.1 | TODO | 1 | — |
+| 2.1 | phase_03.md | P1 | DONE | 1 | G-U21a 2/2, G-U21b 1/1; unit:2.1:1 |
+| 2.2 | phase_03.md | 2.1 | IN_PROGRESS | 1 | delegato a Sonnet |
 | 3.1 | phase_04.md | P2 | TODO | 1 | — |
 | 3.2 | phase_04.md | 3.1 | TODO | 1 | — |
 | 4.1 | phase_05.md | P3 | TODO | 1 | — |
@@ -307,7 +310,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 |----|------|--------------|--------|---------------------------|
 | 0 | phase_01.md | P0 | DONE | review §7; unit:P0:1 |
 | 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
-| 2 | phase_03.md | P2 | TODO | — |
+| 2 | phase_03.md | P2 | IN_PROGRESS | — |
 | 3 | phase_04.md | P3 | TODO | — |
 | 4 | phase_05.md | P4 | TODO | — |
 
@@ -323,7 +326,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | TestDestRemote, TestWebUICheckAuthLogout, TestWebUIPutCreatesParents, TestPutIncompleteRemovedNoCache, TestPatchAppend, TestMoveGuardBrowser, TestWebUIDavClientUnchanged, TestWebUIPathTraversal | 1.1 | G-U11 | PASS | §7 |
 | TestIsText, TestWebUIEditPage, TestFileCSPSandbox | 1.2 | G-U12 | PASS | §7 |
 | TestResumeStoreRoundTrip, TestResumeKeyDistinct, TestResumeCleanup, TestIsMedia, TestWebUIResumeEndpoints | 1.3 | G-U13a/b | PASS | §7 |
-| TestParseSelection, TestWriteSelectionZip, TestWebUIZip | 2.1 | G-U21a/b | TODO | — |
+| TestParseSelection, TestWriteSelectionZip, TestWebUIZip | 2.1 | G-U21a/b | PASS | §7 |
 | TestSearchLimits, TestWebUISearch, TestWebUIDiskStats | 2.2 | G-U22a/b | TODO | — |
 | TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | TODO | — |
 | TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | TODO | — |

@@ -101,6 +101,26 @@ Tutta la documentazione, l'analisi e il piano sono stati riuniti in questa carte
 nessun conflitto possibile ai merge. Il piano stava prima in `docs/plans/`, dentro la cartella `docs/` di
 upstream.
 
+## 9. Prima release (T-A005, B-A003)
+
+La prima release del fork parte dalla point release upstream v1.75.2, sul ramo `v1.75-webui` creato con la
+procedura di [ci-e-release.md](ci-e-release.md#release-del-fork): le modifiche del fork applicate sul tag
+upstream e la CI rigenerata dai workflow di v1.75.2.
+
+Il primo tag, `v1.75.2-webui.1`, ha confermato i controlli del tag e la build dei binari su GitHub e ha
+pubblicato le immagini, ma non la release: `lint`, che usa l'ultima versione di golangci-lint, ha segnalato
+due `errcheck` in `cmd/serve/rc.go`, codice upstream di v1.75.2 corretto solo su `master`, e il job
+`release` dipendeva da `lint` (B-A003). Upstream pubblica i binari dai job di build senza aspettare il lint,
+quindi ora `release` aspetta solo build, Android e `webui` (`4a0c15b87` su `main`, `2fceae105` sul ramo).
+Invece di spostare il tag già pubblicato si è fatta una nuova release, `v1.75.2-webui.2`.
+
+Il run di `v1.75.2-webui.2` ha pubblicato al primo tentativo
+[la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2): 51 file, gli stessi della
+release upstream v1.75.2 con la versione del fork (zip, deb e rpm per piattaforma, sorgenti, vendor,
+checksum, `version.txt`), e le immagini `1.75.2-webui.2`, `1.75`, `1` e `latest` su
+`ghcr.io/manprint/rclone`. I checksum corrispondono e il binario Linux scaricato stampa
+`rclone v1.75.2-webui.2` e serve l'interfaccia. `lint` resta rosso sui tag di v1.75, per il codice upstream.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

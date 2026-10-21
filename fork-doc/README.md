@@ -20,6 +20,10 @@ locali di `build.sh` e `just` il suffisso `-webui`. Le build della CI per i push
 immagini `main` e `beta` su `ghcr.io/manprint/rclone`) hanno la versione beta di upstream seguita dal ramo,
 per esempio `rclone v1.76.0-beta.10633.b4f5c514b.main`.
 
+Le release, con i binari per tutte le piattaforme di upstream, sono su
+https://github.com/manprint/rclone/releases; l'immagine dell'ultima release è
+`ghcr.io/manprint/rclone:latest`, quelle delle singole release `ghcr.io/manprint/rclone:X.Y.Z-webui.N`.
+
 ## Documenti
 
 | Documento | Contenuto |

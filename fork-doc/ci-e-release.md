@@ -65,6 +65,11 @@ non è configurato, quindi le immagini vanno solo su ghcr.io e il workflow del p
 chiave GPG: i checksum delle release sono in chiaro. Il pacchetto `ghcr.io/manprint/rclone` è pubblico (si
 scarica senza login) dalla prima pubblicazione.
 
+Prima release: [`v1.75.2-webui.2`](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2), dal
+ramo `v1.75-webui` (point release upstream v1.75.2). Il tag `v1.75.2-webui.1` non ha una release: il job
+`release` dipendeva ancora da `lint`, rosso sul codice upstream di v1.75.2 (vedi
+[storia.md](storia.md#9-prima-release-t-a005-b-a003)); restano il tag e l'immagine `1.75.2-webui.1`.
+
 ## Release del fork
 
 Si parte da una release upstream, unendo il suo tag (così `VERSION` corrisponde alla release):

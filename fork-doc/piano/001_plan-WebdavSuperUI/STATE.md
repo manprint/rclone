@@ -89,22 +89,20 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: bug B-A003 — trovato dal run del primo tag del fork, `v1.75.2-webui.1` (richiesta utente "si, vai" sulla prima release, unità T-A005 non ancora registrata).
+- Active scope: task T-A005 — prima release del fork (richiesta utente: "si, vai" sulla proposta di `v1.75.2-webui.1`; poi "Nuovo tag .2" dopo B-A003).
 - Scope result: COMPLETE
-- Type: bug
-- ID / attempt: B-A003 / 1
-- Status: CLOSED (unit:B-A003:1)
-- Intent: una release del fork deve partire quando build, test, Android e `webui` sono verdi, anche se l'ultimo golangci-lint segnala codice upstream di una release meno recente.
-- Riproduzione: `fork build` run 39642115603 sul tag `v1.75.2-webui.1` (`4bee566e1`): job `lint` FAIL su `cmd/serve/rc.go:223` e `:359` (`errcheck`, `<-s.errChan`), codice upstream di v1.75.2 corretto su `master` con `//nolint:errcheck` e mai portato su `v1.75-stable`; `release` saltato (in più `mac_amd64` e `mac_arm64` cancellati per capacità GitHub). Atteso: release pubblicata.
-- Causa: il job `release` del fork dipendeva da `lint`, che usa `version: latest`; upstream pubblica i binari dai job di build senza aspettare il lint. Il footprint vieta di toccare `cmd/serve/rc.go`.
+- Type: task
+- ID / attempt: T-A005 / 1
+- Status: CLOSED (unit:T-A005:1)
+- Intent: pubblicare la prima release del fork, `vX.Y.Z-webui.N` sulla point release upstream v1.75.2, con binari, release GitHub e immagini come upstream, e registrarne l'esito.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 `gen-ci.py`: `release.needs` = `[build, android, webui]` + commento; rigenerare e `--check` su `main`; S2 `fork-doc/ci-e-release.md` (dipendenze del job `release`, come portare una correzione della CI su un ramo di release); S3 commit WIP su `main` e push; S4 sul ramo `v1.75-webui`: `gen-ci.py` da `main`, rigenerare dai workflow di v1.75.2, `--check`, footprint con `UPSTREAM_REF=v1.75.2`, commit; S5 tag sul commit corretto (scelta dell'utente: spostare `.1` o creare `.2`), run del tag con `release` eseguito, chiusura.
-- Done: GitHub Release del tag pubblicata dal job `release` con gli asset di tutte le piattaforme.
-- Current step: none (S1–S5 fatti; S5 col tag `v1.75.2-webui.2`, scelta dell'utente)
-- Next action: registrare la release (T-A005)
-- Next eligible plan unit: T-A005 (registrazione della release)
-- Unit base: e4af8ad9d (T-A004/2); branch: main (+ `v1.75-webui` per S4–S5); owned changes: `webui/scripts/gen-ci.py`, `.github/workflows/fork-build.yml`, `fork-doc/ci-e-release.md`, STATE, `fork-doc/storia.md`
-- Repo state: fix `4a0c15b87` su `main` (PEV-Result wip) e `2fceae105` su `v1.75-webui`, pushati; tag `v1.75.2-webui.2` pushato, GitHub Release pubblicata; il tag `v1.75.2-webui.1` resta senza release
+- Mini-plan: S1 ramo `v1.75-webui` da `v1.75.2` + `git diff --binary <merge-base> main | git apply --3way --index` + `gen-ci.py`; prove locali (footprint rispetto a `v1.75.2`, build, vet, test, `RCLONE_WEBUI=false`, `smoke.sh`); S2 commit `4bee566e1`, tag `v1.75.2-webui.1`, push; S3 run del tag (→ B-A003, release saltata); S4 dopo B-A003 tag `v1.75.2-webui.2` su `2fceae105`; S5 verifica di release, asset, checksum, binario e immagini; S6 documentazione (`fork-doc/README.md`, stato in `ci-e-release.md`, `storia.md` §9).
+- Done: release GitHub `v1.75.2-webui.2` con gli asset di upstream e immagini `1.75.2-webui.2`/`1.75`/`1`/`latest` verificate; esito documentato.
+- Current step: none (S1–S6 fatti)
+- Next action: nessuna nello scope
+- Next eligible plan unit: none
+- Unit base: 0af5a8bb3 (chiusura B-A003); branch: main (+ ramo `v1.75-webui`, tag `v1.75.2-webui.1` e `v1.75.2-webui.2`); owned changes: `fork-doc/README.md`, `fork-doc/ci-e-release.md`, `fork-doc/storia.md`, STATE
+- Repo state: `main` pushato con la chiusura; ramo e tag pubblicati; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -253,6 +251,7 @@ An unresolved required reference prevents advancing, except when explicitly
 suspended for Verify; do not assume it was committed.
 A SHA recorded by a later update is optional. Older valid SHA references remain valid.
 | bug | B-A003 / 1 | 1 | Opus (agent-1) | `webui/scripts/gen-ci.py`: `release.needs` = `[build, android, webui]` (senza `lint`, come upstream che pubblica dai job di build) + commento; `fork-build.yml` rigenerato su `main` e, dai workflow di v1.75.2, sul ramo `v1.75-webui`; `fork-doc/ci-e-release.md` (dipendenze del job `release`, `lint` rosso su un tag, come portare una correzione della CI su un ramo di release). Fix `4a0c15b87` su `main` (PEV-Result wip) e `2fceae105` su `v1.75-webui`; il tag `v1.75.2-webui.1` (`4bee566e1`) resta senza release, nuova release `v1.75.2-webui.2` (scelta dell'utente, nessun tag spostato) | `gen-ci.py --check` ok su entrambi i rami; actionlint ok; footprint ok (`main` rispetto a `upstream/master`, ramo rispetto a `v1.75.2`); link checker 43/0; run 39662653217 sul tag `v1.75.2-webui.2`: `release` success con `lint` rosso per lo stesso `cmd/serve/rc.go` upstream | unit:B-A003:1 |
+| task | T-A005 / 1 | 1 | Opus (agent-1) | Ramo `v1.75-webui` (`4bee566e1`: modifiche del fork su v1.75.2, CI rigenerata dai workflow di v1.75.2; `2fceae105`: correzione B-A003), tag `v1.75.2-webui.1` (senza release, B-A003) e `v1.75.2-webui.2` (release). Su `main`: `fork-doc/README.md` (dove sono release e immagini), `fork-doc/ci-e-release.md` (prima release, tag `.1` senza release), `fork-doc/storia.md` §9 | prove locali sul ramo (footprint rispetto a `v1.75.2`, build, vet, test, `RCLONE_WEBUI=false`, `smoke.sh`); run 39642115603/39642115742 (`.1`) e 39662653217/39662653164 (`.2`) in §7; release: 51 asset = upstream v1.75.2, checksum, binario, immagini; link checker 45/0 | unit:T-A005:1 |
 
 ## 5. Files and ownership
 
@@ -264,7 +263,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — B-A003 chiusa (unit:B-A003:1).
+none — T-A005 chiusa (unit:T-A005:1).
 
 ## 7. Verification and reviews
 

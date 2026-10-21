@@ -112,7 +112,8 @@ pubblicato le immagini, ma non la release: `lint`, che usa l'ultima versione di 
 due `errcheck` in `cmd/serve/rc.go`, codice upstream di v1.75.2 corretto solo su `master`, e il job
 `release` dipendeva da `lint` (B-A003). Upstream pubblica i binari dai job di build senza aspettare il lint,
 quindi ora `release` aspetta solo build, Android e `webui` (`4a0c15b87` su `main`, `2fceae105` sul ramo).
-Invece di spostare il tag già pubblicato si è fatta una nuova release, `v1.75.2-webui.2`.
+Invece di spostare il tag già pubblicato si è fatta una nuova release, `v1.75.2-webui.2`; dopo la release
+il tag `v1.75.2-webui.1` e la sua immagine sono stati cancellati.
 
 Il run di `v1.75.2-webui.2` ha pubblicato al primo tentativo
 [la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2): 51 file, gli stessi della

@@ -66,9 +66,10 @@ chiave GPG: i checksum delle release sono in chiaro. Il pacchetto `ghcr.io/manpr
 scarica senza login) dalla prima pubblicazione.
 
 Prima release: [`v1.75.2-webui.2`](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2), dal
-ramo `v1.75-webui` (point release upstream v1.75.2). Il tag `v1.75.2-webui.1` non ha una release: il job
-`release` dipendeva ancora da `lint`, rosso sul codice upstream di v1.75.2 (vedi
-[storia.md](storia.md#9-prima-release-t-a005-b-a003)); restano il tag e l'immagine `1.75.2-webui.1`.
+ramo `v1.75-webui` (point release upstream v1.75.2). Il tag `v1.75.2-webui.1` non ha prodotto una
+release, perché il job `release` dipendeva ancora da `lint`, rosso sul codice upstream di v1.75.2 (vedi
+[storia.md](storia.md#9-prima-release-t-a005-b-a003)); il tag e l'immagine `1.75.2-webui.1` sono stati
+cancellati.
 
 ## Release del fork
 

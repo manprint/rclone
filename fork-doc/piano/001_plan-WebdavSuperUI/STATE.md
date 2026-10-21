@@ -89,22 +89,22 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: bug B-A002 — trovato dal primo run della CI del fork (richiesta utente "chiaramente anche i test"), durante T-A004.
-- Scope result: COMPLETE
+- Active scope: bug B-A003 — trovato dal run del primo tag del fork, `v1.75.2-webui.1` (richiesta utente "si, vai" sulla prima release, unità T-A005 non ancora registrata).
+- Scope result: IN PROGRESS
 - Type: bug
-- ID / attempt: B-A002 / 1
-- Status: CLOSED (unit:B-A002:1)
-- Intent: le posizioni di riproduzione devono funzionare su Windows anche con salvataggi e letture contemporanee.
-- Riproduzione: job `windows` della CI (run 39622874319, commit `b4f5c514b`): `TestResumeStoreRoundTrip/Concurrent` FAIL, 280 errori `open …\resume\<key>.json: The process cannot access the file because it is being used by another process` e `rename …tmp …json` con lo stesso errore. Atteso: PASS come su Linux e macOS.
-- Causa: su Windows un file aperto non si può sostituire (`os.Rename`) né cancellare (`os.Remove`); `resumeStore` non serializzava `load` rispetto a `save`/`clear`.
+- ID / attempt: B-A003 / 1
+- Status: OPEN
+- Intent: una release del fork deve partire quando build, test, Android e `webui` sono verdi, anche se l'ultimo golangci-lint segnala codice upstream di una release meno recente.
+- Riproduzione: `fork build` run 39642115603 sul tag `v1.75.2-webui.1` (`4bee566e1`): job `lint` FAIL su `cmd/serve/rc.go:223` e `:359` (`errcheck`, `<-s.errChan`), codice upstream di v1.75.2 corretto su `master` con `//nolint:errcheck` e mai portato su `v1.75-stable`; `release` saltato (in più `mac_amd64` e `mac_arm64` cancellati per capacità GitHub). Atteso: release pubblicata.
+- Causa: il job `release` del fork dipendeva da `lint`, che usa `version: latest`; upstream pubblica i binari dai job di build senza aspettare il lint. Il footprint vieta di toccare `cmd/serve/rc.go`.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 `sync.RWMutex` `files` in `resumeStore` (lettura sotto RLock, rename e remove sotto Lock); S2 `go test -race -count=3 -run TestResume ./webui/`, vet e compilazione dei test per windows, lint; S3 limite noto per più processi sulla stessa `--webui-resume-dir` (in `fork-doc/uso.md`, T-A004); S4 commit WIP, push, verifica sul job `windows` del run successivo (il test non si riproduce su Linux: rename POSIX), poi chiusura.
-- Done: job `windows` verde con `TestResumeStoreRoundTrip` eseguito.
-- Current step: none (S1–S4 fatti)
-- Next action: nessuna nello scope
-- Next eligible plan unit: none
-- Unit base: d8b1511e1 (T-A004); branch: main; owned changes: `webui/resume.go`, STATE, `fork-doc/storia.md`
-- Repo state: fix `8f56e3629` pushato; chiusura committata e pushata; pulito salvo `.serena/`
+- Mini-plan: S1 `gen-ci.py`: `release.needs` = `[build, android, webui]` + commento; rigenerare e `--check` su `main`; S2 `fork-doc/ci-e-release.md` (dipendenze del job `release`, come portare una correzione della CI su un ramo di release); S3 commit WIP su `main` e push; S4 sul ramo `v1.75-webui`: `gen-ci.py` da `main`, rigenerare dai workflow di v1.75.2, `--check`, footprint con `UPSTREAM_REF=v1.75.2`, commit; S5 tag sul commit corretto (scelta dell'utente: spostare `.1` o creare `.2`), run del tag con `release` eseguito, chiusura.
+- Done: GitHub Release del tag pubblicata dal job `release` con gli asset di tutte le piattaforme.
+- Current step: S3
+- Next action: commit WIP e push di `main`, poi S4
+- Next eligible plan unit: T-A005 (registrazione della release)
+- Unit base: e4af8ad9d (T-A004/2); branch: main (+ `v1.75-webui` per S4–S5); owned changes: `webui/scripts/gen-ci.py`, `.github/workflows/fork-build.yml`, `fork-doc/ci-e-release.md`, STATE, `fork-doc/storia.md`
+- Repo state: ramo `v1.75-webui` (`4bee566e1`) e tag `v1.75.2-webui.1` pushati; immagini `1.75.2-webui.1`, `1.75`, `1`, `latest` pubblicate su ghcr; nessuna GitHub Release
 
 ## 2. Feature context and readiness
 
@@ -263,7 +263,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — B-A002 chiusa (unit:B-A002:1).
+B-A003 / 1 OPEN, S1–S2 fatti (working tree su `main`): `release.needs` senza `lint`, `fork-build.yml` rigenerato (`--check` ok, actionlint ok, footprint ok), `ci-e-release.md` aggiornato. Da fare: S3–S5.
 
 ## 7. Verification and reviews
 

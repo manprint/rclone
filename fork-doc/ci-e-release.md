@@ -81,7 +81,13 @@ Il tag avvia build, test, immagini e release. `rclone version` mostra `rclone v1
 si chiamano come quelli upstream con quella versione (`rclone-v1.76.0-webui.1-linux-amd64.zip`, `.deb`,
 `.rpm`, …). Per una nuova release sullo stesso upstream si usa `-webui.2`.
 
-Il job `release` parte solo se tutti i job di build e test sono verdi. A volte GitHub non assegna un runner
+Il job `release` parte solo se sono verdi tutti i job di build e test, quello Android e `webui`. Come
+upstream, che pubblica i binari dai job di build, non aspetta `lint`: il lint usa l'ultima versione di
+golangci-lint, che può segnalare nel codice di una release upstream meno recente problemi corretti dopo
+su `master` (in v1.75.2, per esempio, due `errcheck` in `cmd/serve/rc.go`). Un `lint` rosso su un tag va
+comunque guardato: se segnala codice del fork si corregge su `main` e si fa una nuova release.
+
+A volte GitHub non assegna un runner
 macOS e cancella il job con "The job was not acquired by Runner of type hosted": è un limite di capacità di
 GitHub, non un errore del codice, ma senza quel job la release non parte. Si rilanciano i job falliti o
 cancellati, insieme a quelli che ne dipendono; se `release` restasse saltato, si rilancia l'intero run:
@@ -119,3 +125,14 @@ il footprint rispetto alla release upstream di `VERSION` invece che rispetto a `
 fork viene da `main`, quindi da un `master` più recente della release: la CI del tag lo compila e lo
 testa sulla release prima di pubblicare. Se `git apply` lascia conflitti (di solito le 3 righe di
 `cmd/serve/webdav/webdav.go`), si risolvono come in un merge.
+
+Una correzione successiva della CI del fork si porta su un ramo così prendendo `gen-ci.py` da `main` e
+rigenerando i workflow sul ramo; i workflow di `main` non si copiano, perché vengono da quelli di
+`master`:
+
+```bash
+git switch v1.75-webui
+git checkout main -- webui/scripts/gen-ci.py
+python3 webui/scripts/gen-ci.py && git add .github/workflows
+UPSTREAM_REF=v1.75.2 webui/scripts/check-footprint.sh
+```

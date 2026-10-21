@@ -240,7 +240,9 @@ def gen_build(makefile, docker):
   release:
     # The release make upload_github does upstream, for the fork tags
     if: github.repository == '{FORK}' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-webui.')
-    needs: [build, lint, android, webui]
+    # Not lint, which upstream doesn't wait for either: it runs the latest
+    # golangci-lint, which can flag the code of an older upstream release
+    needs: [build, android, webui]
     timeout-minutes: 60
     name: "release"
     runs-on: ubuntu-latest

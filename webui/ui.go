@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/vfs"
 )
@@ -35,6 +38,7 @@ type UI struct {
 	cfg        Config
 	opt        Options
 	rawTpl     string                          // page template with the overlay script injected
+	resume     *resumeStore                    // playback positions, nil if they aren't remembered
 	publicWrap func(http.Handler) http.Handler // CORS and response headers for requests handled before authentication
 }
 
@@ -53,14 +57,33 @@ func New(cfg Config, opt Options) (*UI, error) {
 	cors := libhttp.MiddlewareCORS(cfg.AllowOrigin)
 	respHeaders := libhttp.MiddlewareResponseHeaders(headers)
 	return &UI{
-		cfg: cfg,
-		opt: opt,
+		cfg:    cfg,
+		opt:    opt,
+		resume: newResume(opt),
 		rawTpl: strings.Replace(indexHTML, overlayTag,
 			overlayTag+"\n  <script src=\"__ASSETS_PREFIX__overlay.js\"></script>", 1),
 		publicWrap: func(h http.Handler) http.Handler {
 			return cors(respHeaders(h))
 		},
 	}, nil
+}
+
+// newResume returns the store of playback positions if the options ask for
+// one, or nil if they don't or it can't be created
+func newResume(opt Options) *resumeStore {
+	if !opt.Resume {
+		return nil
+	}
+	dir := opt.ResumeDir
+	if dir == "" {
+		dir = filepath.Join(config.GetCacheDir(), "webui", "resume")
+	}
+	store, err := newResumeStore(dir, time.Duration(opt.ResumeRetention))
+	if err != nil {
+		fs.Errorf(nil, "webui: playback resume disabled: %v", err)
+		return nil
+	}
+	return store
 }
 
 // baseSlash returns the base URL with a leading and trailing slash
@@ -102,7 +125,7 @@ func (u *UI) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if u.serveWrite(w, r) || u.serveEdit(w, r) || u.serveListing(w, r) {
+		if u.serveWrite(w, r) || u.serveResume(w, r) || u.serveEdit(w, r) || u.serveListing(w, r) {
 			return
 		}
 		sandboxActive(w, r)

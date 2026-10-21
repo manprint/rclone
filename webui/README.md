@@ -85,6 +85,41 @@ richiesta passa all'upstream.
   `allow_search`, `enable_data_stats` e `show_concurrent_uploads_settings` dei dati della pagina; le
   funzioni corrispondenti arrivano nelle fasi successive.
 
+## Ripresa riproduzione
+
+Con `--webui-resume` il player dell'interfaccia ricorda fino a dove è arrivata la riproduzione di un file
+multimediale e riparte da lì alla visita successiva; l'elenco della cartella riporta la posizione
+(`resume_position`, in secondi interi) accanto ai file che ne hanno una. Per default è spenta: senza il
+flag le richieste di ripresa ricevono `404` e `playback_resume_enabled` è falso.
+
+| Flag | Default | Effetto |
+|------|---------|---------|
+| `--webui-resume` | `false` | Attiva la memorizzazione delle posizioni |
+| `--webui-resume-dir` | vuoto | Cartella delle posizioni; vuoto = `<cache dir di rclone>/webui/resume` |
+| `--webui-resume-retention` | `720h` | Le posizioni non aggiornate da più di questo tempo sono cancellate; `0` le conserva sempre |
+
+Le posizioni stanno solo sul disco locale del server, in file JSON (uno per file, `<sha256>.json`, permessi
+`0600`) dentro la cartella indicata, creata con permessi `0700`. Non si scrive nulla sul remote, nemmeno con
+`--read-only`. Se la cartella non si può creare il server scrive un errore nel log e parte lo stesso, con la
+ripresa disattivata.
+
+La posizione è per remote e percorso del file ed è condivisa da tutti gli utenti dello stesso remote: se
+due utenti guardano lo stesso video, l'ultimo salvataggio vince. Rinominare o spostare un file ne perde la
+posizione. La chiave dipende dal remote servito, quindi due server con remote diversi non si mescolano
+anche se usano la stessa cartella.
+
+Sono interessati i file con estensione (senza distinzione di maiuscole) `mp4`, `mov`, `avi`, `wmv`, `flv`,
+`webm`, `mkv`, `mp3`, `ogg`, `wav`, `m4a`. L'interfaccia usa tre richieste `GET` (valide anche come `HEAD`)
+su qualunque percorso:
+
+- `?resume-get`: `200` con `{"position", "duration", "timestamp", "file_path"}`, `404` se non c'è una posizione.
+- `?resume-save=<secondi>[&duration=<secondi>]`: `204`; `400` se la posizione non è un numero finito `>= 0`;
+  `404` se il percorso non è un file multimediale esistente.
+- `?resume-clear`: `204`, anche se non c'era una posizione.
+
+Le risposte portano `Cache-Control: no-store`. Almeno una volta ogni 24 ore, al primo salvataggio, il server
+cancella in background le posizioni più vecchie di `--webui-resume-retention`.
+
 ## Sincronizzazione
 
 Gli asset (`assets/index.html`, `index.js`, `index.css`, `favicon.ico`) sono copiati byte per byte da

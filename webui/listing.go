@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -100,19 +101,7 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 	}
 	items := make([]PathItem, 0, len(entries))
 	for _, entry := range entries {
-		item := PathItem{
-			PathType: PathTypeFile,
-			Name:     entry.Name(),
-			Size:     entry.Size(),
-		}
-		if !VFS.Opt.NoModTime {
-			item.Mtime = entry.ModTime().UnixMilli()
-		}
-		if entry.IsDir() {
-			item.PathType = PathTypeDir
-			item.Size = u.dirSize(entry)
-		}
-		items = append(items, item)
+		items = append(items, u.pathItem(VFS, entry, remote))
 	}
 	sortPathItems(items, query.Get("sort"), query.Get("order"), query.Has("sort"))
 
@@ -132,6 +121,7 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		Auth:                          u.cfg.UsingAuth(),
 		User:                          user,
 		Paths:                         items,
+		PlaybackResumeEnabled:         u.resume != nil,
 		EnableDataStats:               u.opt.DiskStats,
 		ShowConcurrentUploadsSettings: u.opt.UploadSettings,
 	}
@@ -164,6 +154,26 @@ func (u *UI) writeData(w http.ResponseWriter, r *http.Request, remote string, da
 	if r.Method == http.MethodGet {
 		_, _ = w.Write(body)
 	}
+}
+
+// pathItem returns the listing entry for the node, which is in the
+// directory dir of the VFS
+func (u *UI) pathItem(VFS *vfs.VFS, entry vfs.Node, dir string) PathItem {
+	item := PathItem{
+		PathType: PathTypeFile,
+		Name:     entry.Name(),
+		Size:     entry.Size(),
+	}
+	if !VFS.Opt.NoModTime {
+		item.Mtime = entry.ModTime().UnixMilli()
+	}
+	if entry.IsDir() {
+		item.PathType = PathTypeDir
+		item.Size = u.dirSize(entry)
+	} else {
+		item.ResumePosition = u.resumePosition(VFS, path.Join(dir, item.Name))
+	}
+	return item
 }
 
 // dirSize returns the size shown for a directory: -1, or the number of

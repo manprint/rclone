@@ -1019,3 +1019,194 @@ func TestFileCSPSandbox(t *testing.T) {
 		assert.Empty(t, resp.Header.Get("Content-Security-Policy"))
 	})
 }
+
+// resumeRecord decodes the body of a ?resume-get reply
+type resumeRecord struct {
+	Position  float64  `json:"position"`
+	Duration  *float64 `json:"duration"`
+	Timestamp int64    `json:"timestamp"`
+	FilePath  string   `json:"file_path"`
+}
+
+// TestWebUIResumeEndpoints checks the playback resume API and the
+// positions in the listing
+func TestWebUIResumeEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0777))
+	for _, name := range []string{"v.mp4", "x.txt", "sub/a.MP3", "sub/b.mkv"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("data"), 0666))
+	}
+	resumeDir := t.TempDir()
+	enable := func(o *webui.Options) {
+		o.Resume = true
+		o.ResumeDir = resumeDir
+	}
+	positions := func(t *testing.T, body string) map[string]*int64 {
+		t.Helper()
+		out := map[string]*int64{}
+		for _, item := range jsonData(t, body).Paths {
+			out[item.Name] = item.ResumePosition
+		}
+		return out
+	}
+
+	t.Run("Enabled", func(t *testing.T) {
+		url := startWebUIDir(t, dir, nil, enable, nil)
+
+		resp, body := doRequest(t, "GET", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		assert.Equal(t, `{"error":"No resume position found"}`, body)
+
+		_, body = doRequest(t, "GET", url+"?json", nil)
+		data := jsonData(t, body)
+		assert.True(t, data.PlaybackResumeEnabled)
+		assert.Equal(t, map[string]*int64{"sub": nil, "v.mp4": nil, "x.txt": nil}, positions(t, body))
+
+		resp, body = doRequest(t, "GET", url+"v.mp4?resume-save=12.5&duration=100", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.Empty(t, body)
+
+		resp, body = doRequest(t, "GET", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		var rec resumeRecord
+		require.NoError(t, json.Unmarshal([]byte(body), &rec))
+		assert.Equal(t, 12.5, rec.Position)
+		require.NotNil(t, rec.Duration)
+		assert.Equal(t, 100.0, *rec.Duration)
+		assert.Equal(t, "/v.mp4", rec.FilePath)
+		assert.InDelta(t, time.Now().Unix(), rec.Timestamp, 60)
+
+		resp, body = doRequest(t, "HEAD", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, body)
+
+		_, body = doRequest(t, "GET", url+"?json", nil)
+		got := positions(t, body)
+		require.NotNil(t, got["v.mp4"])
+		assert.Equal(t, int64(12), *got["v.mp4"], "the position is truncated")
+		assert.Nil(t, got["x.txt"])
+
+		// The page embeds the same data
+		_, body = doRequest(t, "GET", url, browserHeaders)
+		assert.True(t, pageData(t, body).PlaybackResumeEnabled)
+
+		// Positions are for a path: another file is not affected
+		resp, _ = doRequest(t, "GET", url+"sub/b.mkv?resume-get", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		// Saves in a subdirectory with an upper case extension show in its listing
+		resp, _ = doRequest(t, "GET", url+"sub/a.MP3?resume-save=3&duration=NaN", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		resp, body = doRequest(t, "GET", url+"sub/a.MP3?resume-get", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		rec = resumeRecord{}
+		require.NoError(t, json.Unmarshal([]byte(body), &rec))
+		assert.Nil(t, rec.Duration, "a duration which isn't finite is null")
+		_, body = doRequest(t, "GET", url+"sub/?json", nil)
+		got = positions(t, body)
+		require.NotNil(t, got["a.MP3"])
+		assert.Equal(t, int64(3), *got["a.MP3"])
+		assert.Nil(t, got["b.mkv"])
+
+		// Invalid requests
+		for _, query := range []string{"-1", "abc", "", "NaN", "Inf", "-Inf"} {
+			resp, _ = doRequest(t, "GET", url+"v.mp4?resume-save="+query, nil)
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode, query)
+		}
+		resp, _ = doRequest(t, "GET", url+"x.txt?resume-save=1", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "not media")
+		resp, _ = doRequest(t, "GET", url+"missing.mp4?resume-save=1", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "doesn't exist")
+		resp, _ = doRequest(t, "GET", url+"sub?resume-save=1", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "directory")
+		entries, err := os.ReadDir(resumeDir)
+		require.NoError(t, err)
+		assert.Len(t, entries, 2, "failed saves leave nothing in the store")
+
+		// Reading and clearing need no file
+		resp, _ = doRequest(t, "GET", url+"gone.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		resp, _ = doRequest(t, "GET", url+"gone.mp4?resume-clear", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		resp, _ = doRequest(t, "GET", url+"v.mp4?resume-clear", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		resp, body = doRequest(t, "GET", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, `{"error":"No resume position found"}`, body)
+
+		// The file itself is untouched
+		_, body = doRequest(t, "GET", url+"v.mp4", nil)
+		assert.Equal(t, "data", body)
+	})
+
+	t.Run("SharedByUsers", func(t *testing.T) {
+		url := startWebUIDir(t, dir, func(opt *Options) {
+			opt.Auth.BasicUser = testUser
+			opt.Auth.BasicPass = testPass
+		}, enable, nil)
+		resp, _ := doRequest(t, "GET", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "needs authentication")
+		auth := map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(testUser+":"+testPass))}
+		resp, _ = doRequest(t, "GET", url+"v.mp4?resume-save=7", auth)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		_, body := doRequest(t, "GET", url+"?json", auth)
+		got := positions(t, body)
+		require.NotNil(t, got["v.mp4"])
+		assert.Equal(t, int64(7), *got["v.mp4"])
+	})
+
+	t.Run("ReadOnly", func(t *testing.T) {
+		vfsOpt := vfscommon.Opt
+		vfsOpt.ReadOnly = true
+		url := startWebUIDir(t, dir, nil, enable, &vfsOpt)
+		resp, _ := doRequest(t, "GET", url+"v.mp4?resume-save=9", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode, "positions are not written to the remote")
+	})
+
+	t.Run("BaseURL", func(t *testing.T) {
+		url := startWebUIDir(t, dir, func(opt *Options) { opt.HTTP.BaseURL = "/pfx" }, enable, nil)
+		resp, _ := doRequest(t, "GET", url+"sub/b.mkv?resume-save=4", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		resp, body := doRequest(t, "GET", url+"sub/b.mkv?resume-get", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		var rec resumeRecord
+		require.NoError(t, json.Unmarshal([]byte(body), &rec))
+		assert.Equal(t, "/sub/b.mkv", rec.FilePath, "without the base URL")
+	})
+
+	t.Run("Disabled", func(t *testing.T) {
+		url := startWebUIDir(t, dir, nil, func(o *webui.Options) {
+			o.Resume = false
+			o.ResumeDir = resumeDir
+		}, nil)
+		resp, body := doRequest(t, "GET", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, `{"error":"Playback resume disabled"}`, body)
+		resp, body = doRequest(t, "GET", url+"v.mp4?resume-save=1", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Equal(t, `{"error":"Playback resume disabled"}`, body)
+		resp, _ = doRequest(t, "GET", url+"v.mp4?resume-clear", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		_, body = doRequest(t, "GET", url+"?json", nil)
+		data := jsonData(t, body)
+		assert.False(t, data.PlaybackResumeEnabled)
+		assert.Equal(t, map[string]*int64{"sub": nil, "v.mp4": nil, "x.txt": nil}, positions(t, body), "no positions are read")
+	})
+
+	t.Run("UIDisabled", func(t *testing.T) {
+		url := startWebUIDir(t, dir, nil, func(o *webui.Options) {
+			o.Enabled = false
+			o.Resume = true
+			o.ResumeDir = resumeDir
+		}, nil)
+		resp, _ := doRequest(t, "GET", url+"v.mp4?resume-get", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "the file, as for upstream")
+		assert.Empty(t, resp.Header.Get("Cache-Control"))
+	})
+}

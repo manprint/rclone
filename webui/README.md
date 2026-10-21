@@ -81,9 +81,10 @@ richiesta passa all'upstream.
 - `--webui-dir-count`: la colonna dimensione delle cartelle mostra il numero di elementi (al massimo 1000)
   invece di un trattino. Costa un elenco di ogni sottocartella a ogni apertura della pagina, quindi è
   spento per default; se una sottocartella non si può leggere resta il trattino.
-- `--webui-search`, `--webui-disk-stats`, `--webui-upload-settings`: controllano soltanto i campi
-  `allow_search`, `enable_data_stats` e `show_concurrent_uploads_settings` dei dati della pagina; le
-  funzioni corrispondenti arrivano nelle fasi successive.
+- `--webui-search`, `--webui-disk-stats`: attivano la ricerca e le statistiche di spazio (sezione
+  "Ricerca e statistiche") e i campi `allow_search` ed `enable_data_stats` dei dati della pagina.
+- `--webui-upload-settings`: controlla soltanto il campo `show_concurrent_uploads_settings` dei dati della
+  pagina; la funzione corrispondente arriva nelle fasi successive.
 
 ## Comportamento con client WebDAV
 
@@ -157,6 +158,48 @@ su qualunque percorso:
 
 Le risposte portano `Cache-Control: no-store`. Almeno una volta ogni 24 ore, al primo salvataggio, il server
 cancella in background le posizioni più vecchie di `--webui-resume-retention`.
+
+## Ricerca e statistiche
+
+### Ricerca
+
+Il campo di ricerca della pagina apre `<cartella>/?q=<testo>`, che risponde come l'elenco della cartella
+(stessi dati, `?json` e HTML) con i soli elementi il cui nome contiene il testo, senza distinguere maiuscole,
+cercati anche nelle sottocartelle. I nomi sono percorsi relativi alla cartella corrente (`x/match2.txt`);
+l'ordine segue `?sort` e `?order` come nell'elenco. Le cartelle trovate hanno sempre dimensione `-1`, anche
+con `--webui-dir-count`. Un testo vuoto o di soli spazi dà l'elenco normale, come `--webui-search=false`
+(in quel caso `allow_search` è falso e `?q` è ignorato). Come l'elenco, la ricerca risponde solo ai browser
+e a `?json`: un client da riga di comando che invia `?q` senza `?json` passa all'upstream.
+
+| Flag | Default | Effetto |
+|------|---------|---------|
+| `--webui-search` | `true` | Abilita la ricerca |
+| `--webui-search-max-depth` | `8` | Livelli di sottocartelle esplorati: con `0` solo la cartella corrente |
+| `--webui-search-max-results` | `1000` | Numero massimo di risultati |
+| `--webui-search-timeout` | `30s` | Durata massima; vale anche la chiusura della connessione da parte del browser |
+
+La ricerca scende per livelli. Quando raggiunge un limite (profondità, risultati o tempo) o il browser chiude
+la richiesta si ferma e risponde `200` con i risultati trovati fin lì: un elenco parziale non è segnalato
+come errore. Le sottocartelle che non si riescono a leggere sono saltate (se ne scrive nel log a livello
+debug). I limiti sono usati come indicati: `0` risultati o `0s` di tempo danno un elenco vuoto.
+
+Su un remote la ricerca costa un elenco di ogni cartella visitata (una richiesta al backend per cartella,
+se non sono già in cache), quindi su remote grandi o lenti conviene tenere bassi profondità e timeout. Una
+singola lettura già avviata non è interrotta dal timeout: la ricerca si ferma alla sua conclusione.
+
+### Statistiche di spazio
+
+Con `--webui-disk-stats` la pagina mostra lo spazio usato e libero, chiedendolo con `GET <cartella>/?disk-stats`
+(da qualsiasi client, senza `Accept: text/html`). La risposta è `200` con
+`{"disk_usage": <usato>, "disk_total": <totale>, "disk_available": <libero>}` in byte e
+`Cache-Control: no-cache`; un valore sconosciuto è `null`, e se sono tutti sconosciuti la risposta è `404`
+con `{"error":"Disk usage unknown"}`. Senza il flag la risposta è `404`.
+
+I valori vengono dal metodo `About` del backend (come `rclone about` e `rclone mount`), tramite la VFS: se il
+backend non lo supporta la VFS riporta uso `0` e uno spazio libero fittizio molto grande, e la pagina mostra
+"Non disponibile". `--vfs-disk-space-total-size` fissa il totale; `--vfs-used-is-size` calcola l'uso sommando
+le dimensioni di tutti i file, il che costa una visita completa del remote. I valori sono tenuti in cache
+per `--dir-cache-time`.
 
 ## Sincronizzazione
 

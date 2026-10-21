@@ -67,6 +67,8 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	case query.Has("zip"):
 		// Opened from links so it needs no browser
+	case query.Has("disk-stats"):
+		// Fetched by the page's script
 	case !query.Has("json") && !browser:
 		return false
 	}
@@ -101,14 +103,27 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	entries, err := node.(*vfs.Dir).ReadDirAll()
-	if err != nil {
-		serve.Error(ctx, remote, w, "Failed to list directory", err)
+	var items []PathItem
+	needle := strings.ToLower(strings.TrimSpace(query.Get("q")))
+	switch {
+	case u.opt.Search && needle != "":
+		items = u.searchItems(ctx, VFS, node.(*vfs.Dir), remote, needle)
+		if items == nil {
+			items = []PathItem{}
+		}
+	case query.Has("disk-stats"):
+		u.serveDiskStats(w, r, VFS)
 		return true
-	}
-	items := make([]PathItem, 0, len(entries))
-	for _, entry := range entries {
-		items = append(items, u.pathItem(VFS, entry, remote))
+	default:
+		entries, err := node.(*vfs.Dir).ReadDirAll()
+		if err != nil {
+			serve.Error(ctx, remote, w, "Failed to list directory", err)
+			return true
+		}
+		items = make([]PathItem, 0, len(entries))
+		for _, entry := range entries {
+			items = append(items, u.pathItem(VFS, entry, remote))
+		}
 	}
 	sortPathItems(items, query.Get("sort"), query.Get("order"), query.Has("sort"))
 
@@ -166,6 +181,12 @@ func (u *UI) writeData(w http.ResponseWriter, r *http.Request, remote string, da
 // pathItem returns the listing entry for the node, which is in the
 // directory dir of the VFS
 func (u *UI) pathItem(VFS *vfs.VFS, entry vfs.Node, dir string) PathItem {
+	return u.entryItem(VFS, entry, dir, true)
+}
+
+// entryItem is pathItem which counts the entries of a directory only if
+// countDirs is set and the options ask for it
+func (u *UI) entryItem(VFS *vfs.VFS, entry vfs.Node, dir string, countDirs bool) PathItem {
 	item := PathItem{
 		PathType: PathTypeFile,
 		Name:     entry.Name(),
@@ -176,7 +197,10 @@ func (u *UI) pathItem(VFS *vfs.VFS, entry vfs.Node, dir string) PathItem {
 	}
 	if entry.IsDir() {
 		item.PathType = PathTypeDir
-		item.Size = u.dirSize(entry)
+		item.Size = -1
+		if countDirs {
+			item.Size = u.dirSize(entry)
+		}
 	} else {
 		item.ResumePosition = u.resumePosition(VFS, path.Join(dir, item.Name))
 	}

@@ -1,6 +1,6 @@
 # WebdavSuperUI — Implementation state
 
-Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 2.1, apertura 2.2.
+Read first at every session. Updated 2026-10-21 by Opus (agent-1, coordinator) — chiusura 2.2, apertura P2.
 Plan ID: 001_plan-WebdavSuperUI. Revision: 1. Repo root: <repo>.
 Plan baseline: 81e7372f6fbedfa80592e9a564593d63a8dc32f3 (= origin/master); pre-existing changes: untracked `.serena/` (non del piano: mai committare).
 Roster: Opus (agent-1, supervisore), Sonnet (agent-2, implementatore), Haiku (agent-3, recon — non usato). Active execution style: delegated.
@@ -91,17 +91,17 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
 - Scope result: RUNNING
-- Type: sub-phase
-- ID / attempt: 2.2 / 1
+- Type: phase-close
+- ID / attempt: P2 / 1
 - Status: OPEN
-- Intent: ricerca `?q` con limiti e `?disk-stats`.
-- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1)
-- File / unit heading: phase_03.md — "2.2 Ricerca ?q e ?disk-stats"
-- Current step: S1 (delegato)
-- Next action: attendere il worker; G-U22a/b; chiusura; poi P2.
-- Next eligible plan unit: P2 / phase_03.md
-- Unit base: commit di 2.1 (unit:2.1:1); branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
-- Repo state: pulito salvo `.serena/` dopo il commit di 2.1
+- Intent: gate completi fase 2 e review Opus.
+- Assigned: Opus (agent-1); supervisor: Opus (agent-1)
+- File / unit heading: phase_03.md — "Phase gates and closure"
+- Current step: G-PHASE
+- Next action: G-PHASE, G-LINT, G-FOOT, controllo binario; review; commit phase(2).
+- Next eligible plan unit: 3.1 / phase_04.md
+- Unit base: commit di 2.2 (unit:2.2:1); branch: feat/webdav-frontend; owned changes: STATE.md
+- Repo state: pulito salvo `.serena/` dopo il commit di 2.2
 
 ## 2. Feature context and readiness
 
@@ -222,6 +222,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 1.3 / 1 | 1 | Sonnet (agent-2) | NEW `webui/resume.go`, `webui/resume_test.go`; `webui/ui.go` (store in `New`, `serveResume` tra serveWrite e serveEdit), `webui/listing.go` (`pathItem` riusabile dalla ricerca), README "Ripresa riproduzione", `TestWebUIResumeEndpoints`. Scelte accettate: retention ≤ 0 = conserva per sempre (documentato); record corrotto → 500 su get, ignorato nel listing; race cleanup/save sulla stessa chiave scaduta accettata (innocua) | G-U13a 4/4, G-U13b 1/1 (verificati da Opus), `-race ./webui/` ok, suite/lint/footprint verdi (worker) | unit:1.3:1 |
 | phase-close | P1 / 1 | 1 | Opus (agent-1) | `webui/README.md` (sezione "Comportamento con client WebDAV" con limiti), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (PUT annidato 201, GET contenuto, MOVE guard 412 con dst intatta, PUT senza Origin 409, CHECKAUTH 200, ?edit 200); review §7 | unit:P1:1 |
 | sub-phase | 2.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/zip.go`, `webui/zip_test.go`; `webui/listing.go` (ramo `zip` prima del listing, `download` resta upstream), `TestWebUIZip`. `serveZip(w, r, VFS, dirRemote, query)` riusabile da fase 3. Deviazioni: vedi §8 rev 1.1 (no `vfs.CreateZip`); controllo "too many" solo prima della pulizia (dopo non può crescere); zip lasciato senza central directory su errore a metà (corrotto invece che troncato plausibile) | G-U21a 2/2, G-U21b 1/1 (verificati da Opus), suite/lint/footprint verdi | unit:2.1:1 |
+| sub-phase | 2.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/search.go`, `webui/search_test.go`; `webui/listing.go` (dispatch zip → q → disk-stats → listing; `entryItem` con `countDirs`), README "Ricerca e statistiche", `TestWebUISearch`, `TestWebUIDiskStats`. Deviazioni accettate: `search` riceve un costruttore di item (stesso tipo/mtime/resume del listing); `q` prevale su `disk-stats`/`json`. Nota Opus: `VFS.Statfs` riempie i valori mancanti (total ~1 PiB, used 0) per backend senza About → il ramo 404 "unknown" non è raggiungibile; la pagina mostra "Non disponibile" con used 0 (accettato) | G-U22a 1/1, G-U22b 2/2 (verificati da Opus), suite/lint/footprint verdi (worker) | unit:2.2:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -240,7 +241,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-claimed — 2.2 delegata a Sonnet (agent-2) dopo il commit di 2.1.
+none
 
 ## 7. Verification and reviews
 
@@ -264,6 +265,7 @@ claimed — 2.2 delegata a Sonnet (agent-2) dopo il commit di 2.1.
 | G-PHASE (P1) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 78s ok | 72bf56919 + README | 2026-10-21 |
 | G-LINT/G-FOOT (P1) | vedi §3 | pass | 0 issues; footprint OK | 72bf56919 + README | 2026-10-21 |
 | G-U21a/b | vedi §3 | pass | 2 + 1 top-level PASS | working tree 2.1 | 2026-10-21 |
+| G-U22a/b | vedi §3 | pass | 1 + 2 top-level PASS | working tree 2.2 | 2026-10-21 |
 | binario reale (P1) | build + serve, richieste python | pass | PUT /new/sub/f.txt 201; MOVE /src.txt→/dst 412 e dst/keep.txt intatto; PUT senza Origin con padre mancante 409; CHECKAUTH 200; ?edit 200 | 72bf56919 | 2026-10-21 |
 | binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
@@ -297,7 +299,7 @@ none
 | 1.2 | phase_02.md | 1.1 | DONE | 1 | G-U12 3/3; unit:1.2:1 |
 | 1.3 | phase_02.md | 1.2 | DONE | 1 | G-U13a 4/4, G-U13b 1/1; unit:1.3:1 |
 | 2.1 | phase_03.md | P1 | DONE | 1 | G-U21a 2/2, G-U21b 1/1; unit:2.1:1 |
-| 2.2 | phase_03.md | 2.1 | IN_PROGRESS | 1 | delegato a Sonnet |
+| 2.2 | phase_03.md | 2.1 | DONE | 1 | G-U22a 1/1, G-U22b 2/2; unit:2.2:1 |
 | 3.1 | phase_04.md | P2 | TODO | 1 | — |
 | 3.2 | phase_04.md | 3.1 | TODO | 1 | — |
 | 4.1 | phase_05.md | P3 | TODO | 1 | — |
@@ -327,7 +329,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | TestIsText, TestWebUIEditPage, TestFileCSPSandbox | 1.2 | G-U12 | PASS | §7 |
 | TestResumeStoreRoundTrip, TestResumeKeyDistinct, TestResumeCleanup, TestIsMedia, TestWebUIResumeEndpoints | 1.3 | G-U13a/b | PASS | §7 |
 | TestParseSelection, TestWriteSelectionZip, TestWebUIZip | 2.1 | G-U21a/b | PASS | §7 |
-| TestSearchLimits, TestWebUISearch, TestWebUIDiskStats | 2.2 | G-U22a/b | TODO | — |
+| TestSearchLimits, TestWebUISearch, TestWebUIDiskStats | 2.2 | G-U22a/b | PASS | §7 |
 | TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | TODO | — |
 | TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | TODO | — |
 | TestAPISurfaceLock, TestOverlayNode, smoke.sh | 4.1 | G-U41, G-SMOKE | TODO | — |
@@ -338,7 +340,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | webui/README.md — Flag, Sincronizzazione | 0.1 | DONE | sezioni presenti (nota temporanea "funzioni introdotte dalle fasi successive" da rimuovere in 4.2) |
 | webui/README.md — Interfaccia web | 0.2 | DONE | sezione presente |
 | webui/README.md — Ripresa riproduzione / Comportamento client WebDAV | 1.3 / P1 | DONE | entrambe le sezioni presenti |
-| webui/README.md — Ricerca e statistiche | 2.2 | TODO | — |
+| webui/README.md — Ricerca e statistiche | 2.2 | DONE | sezione presente |
 | webui/README.md — Link di download e link pubblici | 3.2 | TODO | — |
 | webui/README.md — completo | 4.2 | TODO | — |
 

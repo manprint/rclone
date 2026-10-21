@@ -1377,3 +1377,161 @@ func TestWebUIZip(t *testing.T) {
 		assert.False(t, jsonData(t, body).AllowArchive)
 	})
 }
+
+// TestWebUISearch checks the recursive search of a directory page
+func TestWebUISearch(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"match1.txt":         "1",
+		"other.txt":          "o",
+		"x/match2.txt":       "22",
+		"x/MATCHdir/deep.md": "d",
+		"x/y/z/match3.txt":   "333",
+		"matchdir/f.txt":     "f",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0777))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0666))
+	}
+	search := func(t *testing.T, base, query string, header map[string]string) []webui.PathItem {
+		t.Helper()
+		resp, body := doRequest(t, "GET", base+query, header)
+		require.Equal(t, 200, resp.StatusCode)
+		return jsonData(t, body).Paths
+	}
+
+	t.Run("RelativeNames", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, func(o *webui.Options) { o.DirCount = true }, nil)
+		resp, body := doRequest(t, "GET", base+"?q=match&json", nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		data := jsonData(t, body)
+		assert.True(t, data.AllowSearch)
+		assert.Equal(t, "/", data.Href)
+		assert.Equal(t, []string{"matchdir", "x/MATCHdir", "match1.txt", "x/match2.txt", "x/y/z/match3.txt"}, names(data.Paths))
+		for _, item := range data.Paths {
+			if item.PathType == webui.PathTypeDir {
+				assert.Equal(t, int64(-1), item.Size, "directories are not counted in a search")
+			}
+		}
+		assert.Equal(t, int64(2), data.Paths[3].Size)
+
+		// Relative to the directory searched and case-insensitive
+		paths := search(t, base+"x/", "?q=MATCH&json", nil)
+		assert.Equal(t, []string{"MATCHdir", "match2.txt", "y/z/match3.txt"}, names(paths))
+		_, body = doRequest(t, "GET", base+"x/?q=match&json", nil)
+		assert.Equal(t, "/x", jsonData(t, body).Href)
+
+		// Sorted like a listing
+		paths = search(t, base, "?q=match&json&sort=size&order=desc", nil)
+		assert.Equal(t, []string{"x/y/z/match3.txt", "x/match2.txt", "match1.txt", "x/MATCHdir", "matchdir"}, names(paths))
+	})
+
+	t.Run("ResumePositions", func(t *testing.T) {
+		mediaDir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(mediaDir, "x"), 0777))
+		require.NoError(t, os.WriteFile(filepath.Join(mediaDir, "x", "clip.mp4"), []byte("v"), 0666))
+		base := startWebUIDir(t, mediaDir, nil, func(o *webui.Options) {
+			o.Resume = true
+			o.ResumeDir = t.TempDir()
+		}, nil)
+		resp, _ := doRequest(t, "GET", base+"x/clip.mp4?resume-save=42", nil)
+		require.Equal(t, http.StatusNoContent, resp.StatusCode)
+		paths := search(t, base, "?q=clip&json", nil)
+		require.Len(t, paths, 1)
+		assert.Equal(t, "x/clip.mp4", paths[0].Name)
+		require.NotNil(t, paths[0].ResumePosition)
+		assert.Equal(t, int64(42), *paths[0].ResumePosition)
+	})
+
+	t.Run("Page", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, nil, nil)
+		resp, body := doRequest(t, "GET", base+"?q=match2", browserHeaders)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.Equal(t, []string{"x/match2.txt"}, names(pageData(t, body).Paths))
+	})
+
+	t.Run("NoResults", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, nil, nil)
+		_, body := doRequest(t, "GET", base+"?q=nothing-like-this&json", nil)
+		assert.Contains(t, body, `"paths":[]`)
+	})
+
+	t.Run("EmptyQueryIsListing", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, nil, nil)
+		for _, q := range []string{"?q=&json", "?q=%20%20&json"} {
+			assert.Equal(t, []string{"matchdir", "x", "match1.txt", "other.txt"}, names(search(t, base, q, nil)), q)
+		}
+	})
+
+	t.Run("Limits", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, func(o *webui.Options) {
+			o.SearchMaxDepth = 1
+		}, nil)
+		assert.Equal(t, []string{"matchdir", "x/MATCHdir", "match1.txt", "x/match2.txt"}, names(search(t, base, "?q=match&json", nil)))
+
+		base = startWebUIDir(t, dir, nil, func(o *webui.Options) {
+			o.SearchMaxResults = 2
+		}, nil)
+		assert.Len(t, search(t, base, "?q=match&json", nil), 2)
+	})
+
+	t.Run("Disabled", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, func(o *webui.Options) { o.Search = false }, nil)
+		resp, body := doRequest(t, "GET", base+"?q=match&json", nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		data := jsonData(t, body)
+		assert.False(t, data.AllowSearch)
+		assert.Equal(t, []string{"matchdir", "x", "match1.txt", "other.txt"}, names(data.Paths))
+	})
+
+	t.Run("CommandLineClientUnchanged", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, nil, nil)
+		_, body := doRequest(t, "GET", base+"?q=match", map[string]string{"User-Agent": "curl/8", "Accept": "text/html"})
+		assert.NotContains(t, body, "index-data")
+	})
+
+	t.Run("HEAD", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, nil, nil)
+		resp, body := doRequest(t, "HEAD", base+"?q=match&json", nil)
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Empty(t, body)
+		assert.NotEmpty(t, resp.Header.Get("Content-Length"))
+	})
+}
+
+// TestWebUIDiskStats checks the disk usage of a directory page
+func TestWebUIDiskStats(t *testing.T) {
+	dir := listingDir(t)
+
+	t.Run("Disabled", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, nil, nil)
+		resp, _ := doRequest(t, "GET", base+"?disk-stats", nil)
+		assert.Equal(t, 404, resp.StatusCode)
+		_, body := doRequest(t, "GET", base+"?json", nil)
+		assert.False(t, jsonData(t, body).EnableDataStats)
+	})
+
+	t.Run("Enabled", func(t *testing.T) {
+		base := startWebUIDir(t, dir, nil, func(o *webui.Options) { o.DiskStats = true }, nil)
+		// The page's script fetches it without asking for HTML
+		resp, body := doRequest(t, "GET", base+"dir1/?disk-stats", map[string]string{"Accept": "*/*", "User-Agent": browserUA})
+		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
+		var stats struct {
+			Usage     *int64 `json:"disk_usage"`
+			Total     *int64 `json:"disk_total"`
+			Available *int64 `json:"disk_available"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &stats))
+		require.NotNil(t, stats.Total)
+		assert.Greater(t, *stats.Total, int64(0))
+		require.NotNil(t, stats.Usage)
+		require.NotNil(t, stats.Available)
+
+		_, body = doRequest(t, "GET", base+"?json", nil)
+		assert.True(t, jsonData(t, body).EnableDataStats)
+	})
+}

@@ -281,6 +281,7 @@ none — piano completo.
 | G-LINT/G-FOOT (3.2) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.2 | 2026-10-21 |
 | G-U41 | vedi §3 | pass | TestOverlayNode PASS (node v24: index.js e overlay.js `--check`, 3 test `node --test`), TestAPISurfaceLock PASS (Extractor, Message, Assets) | working tree 4.1 | 2026-10-21 |
 | G-SMOKE (4.1) | `webui/scripts/smoke.sh` | pass | 8 controlli, `smoke OK` | working tree 4.1 | 2026-10-21 |
+| render browser (post-P4) | binario + `google-chrome --headless=new --dump-dom` | pass | `/`: righe della tabella con i nomi fuori dal `<template>` (JS eseguito); `/@public/<tok>/pub/`: righe con href `/@public/<tok>/pub/alpha-file.txt` e `?view`; `/pub/alpha-file.txt?view` renderizzata; nessun errore console catturato (cattura log di Chrome non garantita) | eefec3ac5 | 2026-10-21 |
 | G-FINAL (P4) | vedi §3 | pass | webui ok, webdav 89s, lib/http ok; `RCLONE_WEBUI=false` 88s ok; `-race` webui + webdav ok; smoke OK | 5f5916565 | 2026-10-21 |
 | G-LINT/G-FOOT (P4) | vedi §3 | pass | 0 issues; footprint OK | 5f5916565 | 2026-10-21 |
 | G-U42 | vedi §3 | pass | `bash -n` + shellcheck su 5 script; build.sh versione `-webui`; flag help = README 18/18 | working tree 4.2 | 2026-10-21 |

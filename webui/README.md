@@ -94,7 +94,8 @@ Note:
 | `--disable-dir-list` | L'interfaccia resta spenta |
 | `--baseurl` | Prefisso di tutti gli URL, anche quelli degli asset e dei link pubblici (`<baseurl>/@public/...`); i redirect lo mantengono |
 | `--user`, `--pass`, `--htpasswd` | Autenticazione del server. Con l'autenticazione attiva la pagina chiede i token di download (`?tokengen`), conosce l'utente (`CHECKAUTH`) e può fare il logout (`LOGOUT`) |
-| `--user-from-header`, certificati client (`--client-ca`) | Contano come autenticazione: l'utente è quello del header o del certificato, e i token di download e i link pubblici funzionano come con `--user`/`--pass` |
+| `--user-from-header` | Conta come autenticazione: l'utente è quello del header e la pagina chiede i token di download. Di solito il login vero lo fa il reverse proxy davanti a rclone, quindi gli URL con `?token=` e `@public/` funzionano senza credenziali solo se il proxy li lascia passare senza autenticazione |
+| `--client-ca` | Conta come autenticazione (utente dal certificato), ma il TLS richiede un certificato client valido a ogni connessione: token di download e link pubblici funzionano solo per client che hanno già un certificato |
 | `--realm` | Realm dell'autenticazione Basic, usato anche dalla risposta a `LOGOUT` (default `rclone`) |
 | `--auth-proxy` | La VFS dipende dall'utente: i token di download e i link pubblici sono spenti (la pagina scarica con le credenziali del browser) |
 | `--vfs-cache-mode` | Con `off` o `minimal` un upload interrotto cancella il file parziale e la ripresa (`PATCH` append) non è disponibile; con `writes` o `full` il parziale è tenuto e l'upload riprende |

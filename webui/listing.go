@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/rclone/rclone/fs"
-	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/lib/http/serve"
 	"github.com/rclone/rclone/vfs"
 )
@@ -117,6 +116,10 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 	}
 	sortPathItems(items, query.Get("sort"), query.Get("order"), query.Has("sort"))
 
+	var user *string
+	if name, ok := u.lookupUser(r); ok {
+		user = &name
+	}
 	data := IndexData{
 		Href:                          "/" + remote,
 		Kind:                          "Index",
@@ -127,7 +130,7 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		AllowArchive:                  !u.cfg.DisableZip,
 		DirExists:                     true,
 		Auth:                          u.cfg.UsingAuth(),
-		User:                          u.user(r),
+		User:                          user,
 		Paths:                         items,
 		EnableDataStats:               u.opt.DiskStats,
 		ShowConcurrentUploadsSettings: u.opt.UploadSettings,
@@ -175,18 +178,4 @@ func (u *UI) dirSize(entry vfs.Node) int64 {
 		return -1
 	}
 	return int64(min(len(children), maxDirCount))
-}
-
-// user returns the name of the authenticated user, or nil if there is none
-func (u *UI) user(r *http.Request) *string {
-	if name, ok := libhttp.CtxGetUser(r.Context()); ok {
-		return &name
-	}
-	// The auth proxy doesn't put the user in the context
-	if u.cfg.UsingAuth() {
-		if name, _, ok := r.BasicAuth(); ok {
-			return &name
-		}
-	}
-	return nil
 }

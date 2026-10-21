@@ -93,11 +93,15 @@ func (u *UI) PreAuth(next http.Handler) http.Handler {
 
 // Handler returns the handler for authenticated requests
 //
-// It serves the directory pages to browsers. Everything else is passed to
-// next.
+// It serves the directory pages and the operations of browsers. Everything
+// else is passed to next.
 func (u *UI) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if u.serveListing(w, r) {
+		if u.cfg.CheckPath(r.URL.Path) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if u.serveWrite(w, r) || u.serveListing(w, r) {
 			return
 		}
 		next.ServeHTTP(w, r)

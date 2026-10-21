@@ -9,16 +9,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/rclone/rclone/cmd/serve/proxy"
 	"github.com/rclone/rclone/cmd/serve/servetest"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/rclone/rclone/vfs/vfscommon"
@@ -495,4 +499,346 @@ func TestWebUIUpstreamSuiteEnabled(t *testing.T) {
 	}
 
 	servetest.Run(t, "webdav", start)
+}
+
+// browserOrigin is the Origin header browsers send with requests made by scripts
+var browserOrigin = map[string]string{"Origin": "http://localhost"}
+
+// send makes a request with a body and returns the response and its body
+func send(t *testing.T, method, url, body string, header map[string]string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	require.NoError(t, err)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	resp, err := noRedirect.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	return resp, string(got)
+}
+
+// withOrigin returns a copy of header with the browser's Origin added
+func withOrigin(header map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range browserOrigin {
+		out[k] = v
+	}
+	for k, v := range header {
+		out[k] = v
+	}
+	return out
+}
+
+// cacheWritesOpt returns VFS options with the cache on for writes, using a
+// temporary cache directory
+func cacheWritesOpt(t *testing.T) *vfscommon.Options {
+	t.Helper()
+	require.NoError(t, config.SetCacheDir(t.TempDir()))
+	opt := vfscommon.Opt
+	opt.CacheMode = vfscommon.CacheModeWrites
+	return &opt
+}
+
+// TestWebUICheckAuthLogout checks the CHECKAUTH and LOGOUT requests
+func TestWebUICheckAuthLogout(t *testing.T) {
+	t.Run("NoAuth", func(t *testing.T) {
+		url := startWebUI(t, nil, nil, nil)
+		resp, body := doRequest(t, "CHECKAUTH", url, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "", body)
+
+		resp, _ = doRequest(t, "CHECKAUTH", url+"?login", nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Contains(t, resp.Header.Get("WWW-Authenticate"), `realm="rclone"`)
+
+		resp, body = doRequest(t, "LOGOUT", url, nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Contains(t, resp.Header.Get("WWW-Authenticate"), `realm="rclone"`)
+		assert.Equal(t, "", body)
+	})
+	t.Run("Auth", func(t *testing.T) {
+		url := startWebUI(t, func(opt *Options) {
+			opt.Auth.BasicUser = testUser
+			opt.Auth.BasicPass = testPass
+			opt.Auth.Realm = "myrealm"
+		}, nil, nil)
+
+		// The upstream authentication answers requests without credentials
+		resp, _ := doRequest(t, "CHECKAUTH", url, nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+		req, err := http.NewRequest("CHECKAUTH", url, nil)
+		require.NoError(t, err)
+		req.SetBasicAuth(testUser, testPass)
+		resp, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, testUser, string(body))
+
+		req, err = http.NewRequest("LOGOUT", url, nil)
+		require.NoError(t, err)
+		req.SetBasicAuth(testUser, testPass)
+		resp2, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp2.Body.Close() }()
+		assert.Equal(t, http.StatusUnauthorized, resp2.StatusCode)
+		assert.Contains(t, resp2.Header.Get("WWW-Authenticate"), `realm="myrealm"`)
+	})
+}
+
+// TestWebUIPutCreatesParents checks a PUT from a browser creates the
+// parent directories where the upstream server answers 409
+func TestWebUIPutCreatesParents(t *testing.T) {
+	dir := t.TempDir()
+	url := startWebUIDir(t, dir, nil, nil, nil)
+
+	resp, _ := send(t, "PUT", url+"new/sub/f.txt", "hello", withOrigin(nil))
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	got, err := os.ReadFile(filepath.Join(dir, "new", "sub", "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(got))
+
+	// Overwriting replaces the contents
+	resp, _ = send(t, "PUT", url+"new/sub/f.txt", "hi", withOrigin(nil))
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	got, err = os.ReadFile(filepath.Join(dir, "new", "sub", "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "hi", string(got))
+
+	// An empty file, as made by the UI for a new file
+	resp, _ = send(t, "PUT", url+"empty.txt", "", withOrigin(nil))
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	st, err := os.Stat(filepath.Join(dir, "empty.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), st.Size())
+
+	// A directory is left to the upstream handler
+	resp, _ = send(t, "PUT", url+"new", "x", withOrigin(nil))
+	assert.GreaterOrEqual(t, resp.StatusCode, 400)
+	assert.DirExists(t, filepath.Join(dir, "new"))
+
+	// Without Origin it is the upstream behaviour
+	resp, _ = send(t, "PUT", url+"other/sub/f.txt", "hello", nil)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	assert.NoDirExists(t, filepath.Join(dir, "other"))
+}
+
+// TestWebUIPutReadOnly checks a PUT from a browser can't write to a read only VFS
+func TestWebUIPutReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	opt := vfscommon.Opt
+	opt.ReadOnly = true
+	url := startWebUIDir(t, dir, nil, nil, &opt)
+	resp, _ := send(t, "PUT", url+"new/f.txt", "hello", withOrigin(nil))
+	assert.GreaterOrEqual(t, resp.StatusCode, 400)
+	assert.NoDirExists(t, filepath.Join(dir, "new"))
+}
+
+// TestPutIncompleteRemovedNoCache checks a PUT from a browser which ends
+// early leaves no file behind when the VFS has no cache
+func TestPutIncompleteRemovedNoCache(t *testing.T) {
+	dir := t.TempDir()
+	url := startWebUIDir(t, dir, nil, nil, nil)
+
+	conn, err := net.Dial("tcp", strings.TrimSuffix(strings.TrimPrefix(url, "http://"), "/"))
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+	_, err = io.WriteString(conn, "PUT /inc.bin HTTP/1.1\r\nHost: localhost\r\nOrigin: http://x\r\n"+
+		"Content-Length: 10\r\n\r\nabc")
+	require.NoError(t, err)
+	// The server sees the end of the body but can still answer
+	require.NoError(t, conn.(*net.TCPConn).CloseWrite())
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	reply, _ := io.ReadAll(conn)
+	assert.Contains(t, string(reply), "400 Bad Request")
+
+	// The client sees the error before the handler finishes removing the file
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(dir, "inc.bin"))
+		return os.IsNotExist(err)
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+// TestPatchAppend checks a PATCH from a browser appends to a file
+func TestPatchAppend(t *testing.T) {
+	get := func(t *testing.T, url string) string {
+		t.Helper()
+		resp, body := doRequest(t, "GET", url, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		return body
+	}
+	appendHeader := withOrigin(map[string]string{"X-Update-Range": "append"})
+
+	t.Run("Writes", func(t *testing.T) {
+		url := startWebUI(t, nil, nil, cacheWritesOpt(t))
+		resp, _ := send(t, "PUT", url+"a.bin", "abc", withOrigin(nil))
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		resp, _ = send(t, "PATCH", url+"a.bin", "def", appendHeader)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.Equal(t, "abcdef", get(t, url+"a.bin"))
+
+		resp, _ = send(t, "PATCH", url+"a.bin", "ghi", withOrigin(map[string]string{"X-Update-Range": "bytes=0-1"}))
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		assert.Equal(t, "abcdef", get(t, url+"a.bin"))
+
+		resp, _ = send(t, "PATCH", url+"missing.bin", "x", appendHeader)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		resp, _ = send(t, "MKCOL", url+"d", "", nil)
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+		resp, _ = send(t, "PATCH", url+"d", "x", appendHeader)
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	})
+	t.Run("IncompleteKept", func(t *testing.T) {
+		url := startWebUI(t, nil, nil, cacheWritesOpt(t))
+		conn, err := net.Dial("tcp", strings.TrimSuffix(strings.TrimPrefix(url, "http://"), "/"))
+		require.NoError(t, err)
+		defer func() { _ = conn.Close() }()
+		_, err = io.WriteString(conn, "PUT /part.bin HTTP/1.1\r\nHost: localhost\r\nOrigin: http://x\r\n"+
+			"Content-Length: 10\r\n\r\nabc")
+		require.NoError(t, err)
+		require.NoError(t, conn.(*net.TCPConn).CloseWrite())
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+		reply, _ := io.ReadAll(conn)
+		assert.Contains(t, string(reply), "400 Bad Request")
+
+		// The bytes received stay so that the upload can be resumed
+		require.Eventually(t, func() bool {
+			resp, body := doRequest(t, "GET", url+"part.bin", nil)
+			return resp.StatusCode == http.StatusOK && body == "abc"
+		}, 2*time.Second, 20*time.Millisecond)
+		resp, _ := send(t, "PATCH", url+"part.bin", "defghij", appendHeader)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.Equal(t, "abcdefghij", get(t, url+"part.bin"))
+	})
+	t.Run("NoCache", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "a.bin"), []byte("abc"), 0666))
+		url := startWebUIDir(t, dir, nil, nil, nil)
+		resp, _ := send(t, "PATCH", url+"a.bin", "def", appendHeader)
+		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+		assert.Equal(t, "abc", get(t, url+"a.bin"))
+	})
+	t.Run("NoOrigin", func(t *testing.T) {
+		url := startWebUI(t, nil, nil, cacheWritesOpt(t))
+		resp, _ := send(t, "PUT", url+"a.bin", "abc", nil)
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+		resp, _ = send(t, "PATCH", url+"a.bin", "def", map[string]string{"X-Update-Range": "append"})
+		assert.GreaterOrEqual(t, resp.StatusCode, 400)
+		assert.Equal(t, "abc", get(t, url+"a.bin"))
+	})
+}
+
+// moveFixture makes src.txt and the directory dst holding keep.txt
+func moveFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "dst"), 0777))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dst", "keep.txt"), []byte("keep"), 0666))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src.txt"), []byte("src"), 0666))
+	return dir
+}
+
+// TestMoveGuardBrowser checks a MOVE from a browser doesn't replace a directory
+func TestMoveGuardBrowser(t *testing.T) {
+	for _, base := range []string{"", "/pfx"} {
+		t.Run("BaseURL"+base, func(t *testing.T) {
+			dir := moveFixture(t)
+			url := startWebUIDir(t, dir, func(opt *Options) { opt.HTTP.BaseURL = base }, nil, nil)
+
+			// Onto a directory, with or without the slash
+			for _, dst := range []string{"dst", "dst/"} {
+				resp, body := send(t, "MOVE", url+"src.txt", "", withOrigin(map[string]string{"Destination": url + dst}))
+				assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
+				assert.Equal(t, "Destination folder exists\n", body)
+				assert.FileExists(t, filepath.Join(dir, "dst", "keep.txt"))
+				assert.FileExists(t, filepath.Join(dir, "src.txt"))
+			}
+
+			// A path without the base URL doesn't name the directory
+			if base != "" {
+				resp, _ := send(t, "MOVE", url+"src.txt", "", withOrigin(map[string]string{"Destination": "/dst"}))
+				assert.NotEqual(t, http.StatusPreconditionFailed, resp.StatusCode)
+				assert.FileExists(t, filepath.Join(dir, "dst", "keep.txt"))
+			}
+
+			// An explicit Overwrite is the client's decision
+			resp, _ := send(t, "MOVE", url+"src.txt", "", withOrigin(map[string]string{
+				"Destination": url + "dst", "Overwrite": "F"}))
+			assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
+			assert.FileExists(t, filepath.Join(dir, "dst", "keep.txt"))
+
+			// To a new name is handled upstream
+			resp, _ = send(t, "MOVE", url+"src.txt", "", withOrigin(map[string]string{"Destination": url + "new.txt"}))
+			assert.Contains(t, []int{http.StatusCreated, http.StatusNoContent}, resp.StatusCode)
+			assert.FileExists(t, filepath.Join(dir, "new.txt"))
+			assert.NoFileExists(t, filepath.Join(dir, "src.txt"))
+		})
+	}
+}
+
+// TestWebUIDavClientUnchanged checks requests without an Origin header get
+// the same status from the server with the UI as without it
+func TestWebUIDavClientUnchanged(t *testing.T) {
+	run := func(t *testing.T, uiOn bool) (statuses []int) {
+		dir := moveFixture(t)
+		url := startWebUIDir(t, dir, nil, func(opt *webui.Options) { opt.Enabled = uiOn }, cacheWritesOpt(t))
+		for _, req := range []struct {
+			method, path, body string
+			header             map[string]string
+		}{
+			{"PUT", "missing/sub/f.txt", "hello", nil},
+			{"PUT", "a.bin", "abc", nil},
+			{"PATCH", "a.bin", "def", map[string]string{"X-Update-Range": "append"}},
+			{"PATCH", "a.bin", "def", nil},
+			{"MOVE", "src.txt", "", map[string]string{"Destination": url + "dst"}},
+			{"MOVE", "a.bin", "", map[string]string{"Destination": url + "b.bin"}},
+			{"GET", "b.bin", "", nil},
+			{"GET", "dst/keep.txt", "", nil},
+		} {
+			resp, _ := send(t, req.method, url+req.path, req.body, req.header)
+			statuses = append(statuses, resp.StatusCode)
+		}
+		return statuses
+	}
+	with := run(t, true)
+	without := run(t, false)
+	assert.Equal(t, without, with)
+	// The first request is the one the UI changes for browsers
+	assert.Equal(t, http.StatusConflict, with[0])
+}
+
+// TestWebUIPathTraversal checks the requests from browsers are held to the
+// server's path check
+func TestWebUIPathTraversal(t *testing.T) {
+	outer := t.TempDir()
+	root := filepath.Join(outer, "root")
+	require.NoError(t, os.Mkdir(root, 0777))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "src.txt"), []byte("src"), 0666))
+	url := startWebUIDir(t, root, nil, nil, nil)
+
+	resp, _ := send(t, "PUT", url+"a/%2e%2e/%2e%2e/x.txt", "x", withOrigin(nil))
+	assert.False(t, resp.StatusCode >= 200 && resp.StatusCode < 300, "status %d", resp.StatusCode)
+
+	resp, _ = send(t, "PATCH", url+"a/%2e%2e/%2e%2e/x.txt", "x", withOrigin(map[string]string{"X-Update-Range": "append"}))
+	assert.False(t, resp.StatusCode >= 200 && resp.StatusCode < 300, "status %d", resp.StatusCode)
+
+	resp, _ = send(t, "MOVE", url+"src.txt", "", withOrigin(map[string]string{"Destination": url + "%2e%2e/x"}))
+	assert.False(t, resp.StatusCode >= 200 && resp.StatusCode < 300, "status %d", resp.StatusCode)
+
+	assert.NoFileExists(t, filepath.Join(outer, "x.txt"))
+	assert.NoFileExists(t, filepath.Join(outer, "x"))
+	assert.NoFileExists(t, filepath.Join(root, "x.txt"))
+	assert.FileExists(t, filepath.Join(root, "src.txt"))
+	entries, err := os.ReadDir(outer)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
 }

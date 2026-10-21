@@ -135,14 +135,20 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		EnableDataStats:               u.opt.DiskStats,
 		ShowConcurrentUploadsSettings: u.opt.UploadSettings,
 	}
-	body, err := json.Marshal(&data)
-	if err != nil {
-		serve.Error(ctx, remote, w, "Failed to encode directory", err)
-		return true
-	}
+	u.writeData(w, r, remote, &data, query.Has("json"))
+	return true
+}
 
+// writeData replies to a GET or HEAD request with data, as JSON if asJSON
+// is set and otherwise as the page with the data embedded in it
+func (u *UI) writeData(w http.ResponseWriter, r *http.Request, remote string, data any, asJSON bool) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		serve.Error(r.Context(), remote, w, "Failed to encode page data", err)
+		return
+	}
 	header := w.Header()
-	if query.Has("json") {
+	if asJSON {
 		header.Set("Content-Type", "application/json")
 		header.Set("Cache-Control", "no-cache")
 	} else {
@@ -158,7 +164,6 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method == http.MethodGet {
 		_, _ = w.Write(body)
 	}
-	return true
 }
 
 // dirSize returns the size shown for a directory: -1, or the number of

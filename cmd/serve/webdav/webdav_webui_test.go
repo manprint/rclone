@@ -842,3 +842,180 @@ func TestWebUIPathTraversal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, entries, 1)
 }
+
+// editData decodes the data embedded in an edit or view page
+func editData(t *testing.T, body string) (data webui.EditData) {
+	t.Helper()
+	m := indexDataRe.FindStringSubmatch(body)
+	require.NotNil(t, m, "no index-data template in page")
+	raw, err := base64.StdEncoding.DecodeString(m[1])
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &data))
+	return data
+}
+
+// TestWebUIEditPage checks the edit and view pages of a file
+func TestWebUIEditPage(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"note.txt": "ciao",
+		"bin.dat":  "\x00\x01",
+		"v.mp4":    "not really a video",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0666))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "d"), 0777))
+	url := startWebUIDir(t, dir, nil, nil, nil)
+
+	t.Run("Edit", func(t *testing.T) {
+		// Served to any client as the URL is an explicit one for the UI
+		resp, body := doRequest(t, "GET", url+"note.txt?edit", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
+		assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+		assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "frame-ancestors")
+		data := editData(t, body)
+		assert.Equal(t, "Edit", data.Kind)
+		assert.Equal(t, "/note.txt", data.Href)
+		assert.Equal(t, "/", data.URIPrefix)
+		assert.True(t, data.Editable)
+		assert.True(t, data.AllowUpload)
+		assert.True(t, data.AllowDelete)
+		assert.False(t, data.Auth)
+		assert.Nil(t, data.User)
+		assert.Equal(t, 30, data.ResilientPlayerMaxRetry)
+		assert.Equal(t, 10, data.ResilientPlayerReconnectInterval)
+	})
+
+	t.Run("Head", func(t *testing.T) {
+		resp, body := doRequest(t, "HEAD", url+"note.txt?edit", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.NotEmpty(t, resp.Header.Get("Content-Length"))
+		assert.Empty(t, body)
+	})
+
+	t.Run("Binary", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", url+"bin.dat?edit", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.False(t, editData(t, body).Editable)
+	})
+
+	t.Run("View", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", url+"v.mp4?view", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		data := editData(t, body)
+		assert.Equal(t, "View", data.Kind)
+		assert.Equal(t, "/v.mp4", data.Href)
+		// The server ignores playlist
+		_, body = doRequest(t, "GET", url+"v.mp4?view&playlist", nil)
+		assert.Equal(t, "View", editData(t, body).Kind)
+	})
+
+	t.Run("NotFound", func(t *testing.T) {
+		resp, _ := doRequest(t, "GET", url+"missing.txt?edit", nil)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("Directory", func(t *testing.T) {
+		// Left to the listing, which ignores the query
+		resp, body := doRequest(t, "GET", url+"d/?edit", browserHeaders)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "Index", pageData(t, body).Kind)
+	})
+
+	t.Run("PlainGetServesFile", func(t *testing.T) {
+		resp, body := doRequest(t, "GET", url+"note.txt", browserHeaders)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "ciao", body)
+	})
+
+	t.Run("TooBig", func(t *testing.T) {
+		url := startWebUIDir(t, dir, nil, func(o *webui.Options) { o.EditMaxSize = 2 }, nil)
+		_, body := doRequest(t, "GET", url+"note.txt?edit", nil)
+		assert.False(t, editData(t, body).Editable)
+	})
+
+	t.Run("ReadOnlyAndUser", func(t *testing.T) {
+		vfsOpt := vfscommon.Opt
+		vfsOpt.ReadOnly = true
+		url := startWebUIDir(t, dir, func(opt *Options) {
+			opt.Auth.BasicUser = testUser
+			opt.Auth.BasicPass = testPass
+		}, nil, &vfsOpt)
+		_, body := doRequest(t, "GET", url+"note.txt?edit", map[string]string{
+			"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(testUser+":"+testPass)),
+		})
+		data := editData(t, body)
+		assert.False(t, data.AllowUpload)
+		assert.False(t, data.AllowDelete)
+		assert.True(t, data.Auth)
+		require.NotNil(t, data.User)
+		assert.Equal(t, testUser, *data.User)
+	})
+
+	t.Run("BaseURL", func(t *testing.T) {
+		url := startWebUIDir(t, dir, func(opt *Options) { opt.HTTP.BaseURL = "/pfx" }, nil, nil)
+		_, body := doRequest(t, "GET", url+"note.txt?edit", nil)
+		data := editData(t, body)
+		assert.Equal(t, "/note.txt", data.Href)
+		assert.Equal(t, "/pfx/", data.URIPrefix)
+	})
+}
+
+// TestFileCSPSandbox checks the files which can run scripts are sandboxed
+func TestFileCSPSandbox(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"x.html": "<script>alert(1)</script>",
+		"y.SVG":  "<svg/>",
+		"x.txt":  "text",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0666))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "d.html"), 0777))
+	url := startWebUIDir(t, dir, nil, nil, nil)
+
+	resp, body := doRequest(t, "GET", url+"x.html", nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+	assert.Equal(t, "<script>alert(1)</script>", body)
+
+	// Also for a browser, which the listing looks at first
+	resp, body = doRequest(t, "GET", url+"x.html", browserHeaders)
+	assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+	assert.Equal(t, "<script>alert(1)</script>", body)
+
+	resp, _ = doRequest(t, "HEAD", url+"x.html", nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+
+	resp, _ = doRequest(t, "GET", url+"y.SVG", nil)
+	assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+
+	resp, body = doRequest(t, "GET", url+"x.txt", nil)
+	assert.Equal(t, "text", body)
+	assert.Empty(t, resp.Header.Get("Content-Security-Policy"))
+
+	// The edit page is not sandboxed as a file would be
+	resp, _ = doRequest(t, "GET", url+"x.html?edit", nil)
+	assert.NotEqual(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+
+	// A directory is still redirected and listed
+	resp, _ = doRequest(t, "GET", url+"d.html", browserHeaders)
+	assert.Equal(t, http.StatusFound, resp.StatusCode)
+	assert.Equal(t, "/d.html/", resp.Header.Get("Location"))
+	resp, body = doRequest(t, "GET", url+"d.html/", browserHeaders)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "Index", pageData(t, body).Kind)
+	assert.NotEqual(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+
+	t.Run("Disabled", func(t *testing.T) {
+		url := startWebUIDir(t, dir, nil, func(o *webui.Options) { o.Enabled = false }, nil)
+		resp, body := doRequest(t, "GET", url+"x.html", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "<script>alert(1)</script>", body)
+		assert.Empty(t, resp.Header.Get("Content-Security-Policy"))
+	})
+}

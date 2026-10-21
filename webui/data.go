@@ -48,6 +48,20 @@ type IndexData struct {
 	DiskAvailable                 *int64     `json:"disk_available"`
 }
 
+// EditData is the data embedded in the edit and view pages of a file
+type EditData struct {
+	Href                             string  `json:"href"`       // "/" + file, without the base URL
+	Kind                             string  `json:"kind"`       // "Edit" or "View"
+	URIPrefix                        string  `json:"uri_prefix"` // base URL with leading and trailing slash
+	AllowUpload                      bool    `json:"allow_upload"`
+	AllowDelete                      bool    `json:"allow_delete"`
+	Auth                             bool    `json:"auth"`
+	User                             *string `json:"user"`
+	Editable                         bool    `json:"editable"`
+	ResilientPlayerMaxRetry          int     `json:"resilient_player_max_retry"`
+	ResilientPlayerReconnectInterval int     `json:"resilient_player_reconnect_interval"`
+}
+
 // isDigit reports whether b is an ASCII digit
 func isDigit(b byte) bool {
 	return b >= '0' && b <= '9'

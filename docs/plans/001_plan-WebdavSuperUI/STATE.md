@@ -91,17 +91,17 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 - Active scope: plan — 001_plan-WebdavSuperUI completo (fasi 0–4)
 - Scope result: RUNNING
-- Type: none
-- ID / attempt: — / —
-- Status: none
-- Intent: —
-- Assigned: —; supervisor: Opus (agent-1)
-- File / unit heading: —
-- Current step: none
-- Next action: aprire 3.1 (phase_04.md §3.1) e delegarla a Sonnet; review sicurezza Opus prima della chiusura.
-- Next eligible plan unit: 3.1 / phase_04.md
-- Unit base: commit di P2 (unit:P2:1); branch: feat/webdav-frontend; owned changes: —
-- Repo state: pulito salvo `.serena/`
+- Type: sub-phase
+- ID / attempt: 3.1 / 1
+- Status: CLOSED
+- Intent: chiavi HMAC, `?tokengen`, download senza credenziali con `?token=` in PreAuth.
+- Assigned: Sonnet (agent-2, worker delegato); supervisor: Opus (agent-1) — review sicurezza prima della chiusura
+- File / unit heading: phase_04.md — "3.1 Chiavi, ?tokengen, download con ?token= in PreAuth"
+- Current step: chiusura
+- Next action: commit `sub-phase(3.1)`, poi aprire 3.2.
+- Next eligible plan unit: 3.2 / phase_04.md
+- Unit base: 13ca8c311; branch: feat/webdav-frontend; owned changes: `webui/**`, `cmd/serve/webdav/webdav_webui_test.go`
+- Repo state: HEAD 13ca8c311; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -224,6 +224,7 @@ go test -race -count=1 ./webui/... ./cmd/serve/webdav/
 | sub-phase | 2.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/zip.go`, `webui/zip_test.go`; `webui/listing.go` (ramo `zip` prima del listing, `download` resta upstream), `TestWebUIZip`. `serveZip(w, r, VFS, dirRemote, query)` riusabile da fase 3. Deviazioni: vedi §8 rev 1.1 (no `vfs.CreateZip`); controllo "too many" solo prima della pulizia (dopo non può crescere); zip lasciato senza central directory su errore a metà (corrotto invece che troncato plausibile) | G-U21a 2/2, G-U21b 1/1 (verificati da Opus), suite/lint/footprint verdi | unit:2.1:1 |
 | sub-phase | 2.2 / 1 | 1 | Sonnet (agent-2) | NEW `webui/search.go`, `webui/search_test.go`; `webui/listing.go` (dispatch zip → q → disk-stats → listing; `entryItem` con `countDirs`), README "Ricerca e statistiche", `TestWebUISearch`, `TestWebUIDiskStats`. Deviazioni accettate: `search` riceve un costruttore di item (stesso tipo/mtime/resume del listing); `q` prevale su `disk-stats`/`json`. Nota Opus: `VFS.Statfs` riempie i valori mancanti (total ~1 PiB, used 0) per backend senza About → il ramo 404 "unknown" non è raggiungibile; la pagina mostra "Non disponibile" con used 0 (accettato) | G-U22a 1/1, G-U22b 2/2 (verificati da Opus), suite/lint/footprint verdi (worker) | unit:2.2:1 |
 | phase-close | P2 / 1 | 1 | Opus (agent-1) | `webui/README.md` (`--disable-zip` vale anche per gli zip della UI), STATE.md | G-PHASE, G-LINT, G-FOOT pass; binario reale (zip `/d/` con nomi relativi annidati, zip=multi, ricerca annidata); review §7 | unit:P2:1 |
+| sub-phase | 3.1 / 1 | 1 | Sonnet (agent-2) | NEW `webui/token.go`, `webui/files.go`, `webui/token_test.go`; `webui/ui.go` (`keys` in `New`, `tokenDownload` in PreAuth, `serveTokengen` primo nel dispatch Handler, `relPath` rifiuta `/pfxfoo` con base `/pfx`), `TestPreAuthBoundaries` (17 sottocasi). Deviazioni accettate: `?tokengen` con token non verificabili (proxy o senza auth) → 200 corpo vuoto (lo script superdufs chiede il token se c'è un utente; passare a upstream metterebbe il file nell'URL); `TokenExpiry ≤ 0` → token scaduti subito (da documentare); sandbox per estensione come `sandboxActive` (HTML senza estensione non sandboxato = stesso comportamento upstream → limite noto) | G-U31a 4/4, G-U31b 17 sottocasi (verificati da Opus), vet/gofmt, G-LINT 0, G-FOOT ok; mutazioni (Authorization, remote nella firma, IsProxy, base64 strict) fanno fallire i test (worker); review sicurezza Opus §7 | unit:3.1:1 |
 
 Commit references match trailers PEV-Plan, PEV-Unit, PEV-Attempt, PEV-Result.
 Compare exact trailer values in current HEAD's ancestry, not subject/substrings.
@@ -242,7 +243,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none
+none — 3.1 chiusa (review sicurezza PASS), in commit.
 
 ## 7. Verification and reviews
 
@@ -269,12 +270,15 @@ none
 | G-U22a/b | vedi §3 | pass | 1 + 2 top-level PASS | working tree 2.2 | 2026-10-21 |
 | G-PHASE (P2) | vedi §3 | pass | webui ok, webdav 78s, lib/http ok; `RCLONE_WEBUI=false` 77s ok | 927499e01 | 2026-10-21 |
 | G-LINT/G-FOOT (P2) | vedi §3 | pass | 0 issues; footprint OK | 927499e01 | 2026-10-21 |
+| G-U31a/b | vedi §3 | pass | 4 top-level PASS + TestPreAuthBoundaries (17 sottocasi PASS) | working tree 3.1 | 2026-10-21 |
+| G-LINT/G-FOOT (3.1) | vedi §3 | pass | 0 issues; footprint OK | working tree 3.1 | 2026-10-21 |
 | binario reale (P2) | build + serve, richieste python | pass | `/d/?zip` → sub/, sub/deep/, sub/deep/match.txt, x.txt; `?zip=multi&paths=["d"]` → d/… corretti; `?q=match&json` → d/sub/deep/match.txt | 927499e01 | 2026-10-21 |
 | binario reale (P1) | build + serve, richieste python | pass | PUT /new/sub/f.txt 201; MOVE /src.txt→/dst 412 e dst/keep.txt intatto; PUT senza Origin con padre mancante 409; CHECKAUTH 200; ?edit 200 | 72bf56919 | 2026-10-21 |
 | binario reale (P0) | build + `serve webdav` su dir temp, richieste python | pass | browser `/` → pagina con IndexData (sub Dir -1, a.txt 3) + CSP; UA curl → listing upstream; `/sub` → 302 `/sub/`; overlay.js 200 immutable | 1b3287445 | 2026-10-21 |
 
 | Review | Reviewer | Plan revision / reviewed change | Invariants/assertions checked | Verdict |
 |--------|----------|---------------------------------|------------------------------|---------|
+| 3.1 sicurezza | Opus (agent-1) | rev 1 / diff 3.1 su 13ca8c311 | I-5: PreAuth serve senza credenziali solo asset o GET/HEAD con `token` valido, `UsingAuth && !IsProxy`, nessun header Authorization, path sotto baseurl + CheckPath, firma HMAC-SHA256 (chiave derivata, etichette separate token/publink) su user\0remote\0expMs confrontata con `hmac.Equal`, parsing stretto (exp canonico, base64 Strict, user senza NUL); token valido solo per il remote esatto (non figli/padri); dir solo con `zip` (selezione `zip=multi` limitata ai figli da `parseSelection`), file senza `/` finale; `?tokengen` solo dopo auth; risposta via `publicWrap` + `Referrer-Policy: no-referrer`; log senza chiavi né token. Note README per 3.2: secret diversi per server con utenti/dati diversi (token portabili tra server con lo stesso secret), preferire `RCLONE_WEBUI_SECRET` al flag (visibile nei processi), `--webui-token-expiry ≤ 0` disattiva di fatto i link, HTML senza estensione non sandboxato | PASS |
 | P2 | Opus (agent-1) | rev 1 / c45e3d544..927499e01 + README | I-4 su selezione zip (segmenti, CheckPath, Stat prima degli header), limiti ricerca e contesto, streaming zip con errori solo loggati, deviazione CreateZip (§8) verificata sul codice upstream, disk-stats con Statfs riempito; README Ricerca e statistiche + `--disable-zip` | PASS |
 | P1 | Opus (agent-1) | rev 1 / b895eab2f..72bf56919 + README | ordine dispatch Handler (CheckPath → write → resume → edit → listing → CSP → next); I-4 (TestWebUIPathTraversal, destRemote), I-6 (TestWebUIDavClientUnchanged); D9/D10 su test e binario; resume: permessi 0700/0600, scrittura atomica, nessuna scrittura sul remote; README Ripresa riproduzione + Comportamento client WebDAV con limiti | PASS |
 | 1.1 focalizzata | Opus (agent-1) | rev 1 / diff 1.1 su b895eab2f | integrità dati: parziale rimosso solo con cache < writes, tenuto per append altrimenti; PUT in sovrascrittura interrotto perde l'originale (O_TRUNC) = stessa semantica di upstream e superdufs → documentare nei limiti; MOVE guard solo con Origin + Overwrite assente + Destination sotto baseurl e dir esistente; I-4 (CheckPath su URL e Destination), I-6 (TestWebUIDavClientUnchanged); CSRF: PUT/PATCH/MOVE/CHECKAUTH cross-origin richiedono preflight CORS (non configurato di default); PUT browser ignora lock WebDAV e X-OC-Mtime (il browser non li usa) → documentare | PASS, obbligo README a P1: limiti (sovrascrittura interrotta, lock/X-OC-Mtime) |
@@ -305,7 +309,7 @@ none
 | 1.3 | phase_02.md | 1.2 | DONE | 1 | G-U13a 4/4, G-U13b 1/1; unit:1.3:1 |
 | 2.1 | phase_03.md | P1 | DONE | 1 | G-U21a 2/2, G-U21b 1/1; unit:2.1:1 |
 | 2.2 | phase_03.md | 2.1 | DONE | 1 | G-U22a 1/1, G-U22b 2/2; unit:2.2:1 |
-| 3.1 | phase_04.md | P2 | TODO | 1 | — |
+| 3.1 | phase_04.md | P2 | DONE | 1 | G-U31a 4/4, G-U31b 1/1 (17 sottocasi); review sicurezza PASS; unit:3.1:1 |
 | 3.2 | phase_04.md | 3.1 | TODO | 1 | — |
 | 4.1 | phase_05.md | P3 | TODO | 1 | — |
 | 4.2 | phase_05.md | 4.1 | TODO | 1 | — |
@@ -318,7 +322,7 @@ README obligation per phase: P0 → 0.1/0.2 ("Flag", "Sincronizzazione", "Interf
 | 0 | phase_01.md | P0 | DONE | review §7; unit:P0:1 |
 | 1 | phase_02.md | P1 | DONE | review §7; unit:P1:1 |
 | 2 | phase_03.md | P2 | DONE | review §7; unit:P2:1 |
-| 3 | phase_04.md | P3 | TODO | — |
+| 3 | phase_04.md | P3 | IN_PROGRESS | — |
 | 4 | phase_05.md | P4 | TODO | — |
 
 Statuses: TODO, IN_PROGRESS, IN_REVIEW, DONE, SKIPPED, BLOCKED.
@@ -335,7 +339,7 @@ SKIPPED retains a reason and does not automatically satisfy dependent units.
 | TestResumeStoreRoundTrip, TestResumeKeyDistinct, TestResumeCleanup, TestIsMedia, TestWebUIResumeEndpoints | 1.3 | G-U13a/b | PASS | §7 |
 | TestParseSelection, TestWriteSelectionZip, TestWebUIZip | 2.1 | G-U21a/b | PASS | §7 |
 | TestSearchLimits, TestWebUISearch, TestWebUIDiskStats | 2.2 | G-U22a/b | PASS | §7 |
-| TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | TODO | — |
+| TestTokenRoundTrip, TestTokenRejects, TestKeysFromSecret, TestPreAuthTokenIgnoredInProxy, TestPreAuthBoundaries | 3.1 | G-U31a/b | PASS | §7 |
 | TestPublinkAllowed, TestPubTokenSubtree, TestPublicIgnoredInProxy, TestPublicForbiddenWhenNotAllowed, TestPublinkBoundaries, TestPublicPathTraversal | 3.2 | G-U32a/b | TODO | — |
 | TestAPISurfaceLock, TestOverlayNode, smoke.sh | 4.1 | G-U41, G-SMOKE | TODO | — |
 

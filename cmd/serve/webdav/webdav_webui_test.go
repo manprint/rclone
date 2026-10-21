@@ -1535,3 +1535,245 @@ func TestWebUIDiskStats(t *testing.T) {
 		assert.True(t, jsonData(t, body).EnableDataStats)
 	})
 }
+
+// TestPreAuthBoundaries checks what is served without credentials when
+// authentication is on: the assets, and downloads with a valid token
+func TestPreAuthBoundaries(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"f.txt":         "0123456789",
+		"g.txt":         "other",
+		"page.html":     "<script>1</script>",
+		"d/x.txt":       "xx",
+		"d/sub/y.txt":   "yy",
+		"outside/o.txt": "o",
+	} {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0777))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0666))
+	}
+	withAuth := func(opt *Options) {
+		opt.Auth.BasicUser = testUser
+		opt.Auth.BasicPass = testPass
+	}
+	basic := func(user, pass string) map[string]string {
+		return map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))}
+	}
+	creds := basic(testUser, testPass)
+	// tokenFor fetches a token with the credentials, as the page does
+	tokenFor := func(t *testing.T, target string) string {
+		t.Helper()
+		resp, body := doRequest(t, "GET", target, creds)
+		require.Equal(t, http.StatusOK, resp.StatusCode, target)
+		assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
+		assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+		require.NotEmpty(t, body)
+		return body
+	}
+	base := startWebUIDir(t, dir, withAuth, nil, nil)
+
+	status := func(method, target string, header map[string]string) int {
+		resp, _ := doRequest(t, method, target, header)
+		return resp.StatusCode
+	}
+
+	t.Run("Assets", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK, status("GET", base+webui.AssetsPrefix()+"index.css", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base, nil))
+	})
+
+	t.Run("TokengenNeedsCredentials", func(t *testing.T) {
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?tokengen", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?tokengen", basic(testUser, "wrong")))
+		// A missing file has no token
+		resp, _ := doRequest(t, "GET", base+"missing.txt?tokengen", creds)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("File", func(t *testing.T) {
+		tok := tokenFor(t, base+"f.txt?tokengen")
+		resp, body := doRequest(t, "GET", base+"f.txt?token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "0123456789", body)
+		assert.Equal(t, "no-referrer", resp.Header.Get("Referrer-Policy"))
+
+		resp, body = doRequest(t, "HEAD", base+"f.txt?token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "10", resp.Header.Get("Content-Length"))
+		assert.Empty(t, body)
+
+		resp, body = doRequest(t, "GET", base+"f.txt?token="+tok, map[string]string{"Range": "bytes=2-4"})
+		assert.Equal(t, http.StatusPartialContent, resp.StatusCode)
+		assert.Equal(t, "234", body)
+
+		// The page's download links add the token to the other parameters
+		resp, body = doRequest(t, "GET", base+"f.txt?download&token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "0123456789", body)
+	})
+
+	t.Run("TokenIsForOneRemote", func(t *testing.T) {
+		tok := tokenFor(t, base+"f.txt?tokengen")
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"g.txt?token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/x.txt?token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt/?token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok+"0", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token=", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token", nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token=a.b.c", nil))
+	})
+
+	t.Run("OnlyReads", func(t *testing.T) {
+		tok := tokenFor(t, base+"f.txt?tokengen")
+		for _, method := range []string{"PUT", "DELETE", "PATCH", "POST", "MOVE", "COPY", "PROPFIND", "MKCOL", "OPTIONS"} {
+			resp, _ := send(t, method, base+"f.txt?token="+tok, "x", map[string]string{"Destination": base + "new.txt"})
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, method)
+		}
+		assert.Equal(t, "0123456789", mustRead(t, filepath.Join(dir, "f.txt")))
+		assert.NoFileExists(t, filepath.Join(dir, "new.txt"))
+	})
+
+	t.Run("Directory", func(t *testing.T) {
+		tok := tokenFor(t, base+"d/?tokengen")
+		resp, body := doRequest(t, "GET", base+"d/?zip&token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/zip", resp.Header.Get("Content-Type"))
+		entries := zipEntries(t, body)
+		assert.Equal(t, "xx", entries["x.txt"])
+		assert.Equal(t, "yy", entries["sub/y.txt"])
+		assert.NotContains(t, entries, "f.txt")
+
+		// Without the slash, and a selection, which the page makes with the
+		// token of the directory
+		assert.Equal(t, http.StatusOK, status("GET", base+"d?zip&token="+tok, nil))
+		resp, body = doRequest(t, "GET", base+"d/?zip=multi&paths="+url.QueryEscape(`["x.txt"]`)+"&token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, map[string]string{"x.txt": "xx"}, zipEntries(t, body))
+		assert.Equal(t, http.StatusOK, status("HEAD", base+"d/?zip&token="+tok, nil))
+
+		// The directory token serves nothing else
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/?token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/?json&token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/?q=x&token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/x.txt?token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/sub/?zip&token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"?zip&token="+tok, nil))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"d/?zip=multi&paths="+url.QueryEscape(`["x.txt"]`)+"&token="+tok+"x", nil))
+		// Paths of a selection can't leave the directory
+		assert.Equal(t, http.StatusBadRequest, status("GET", base+"d/?zip=multi&paths="+url.QueryEscape(`["../f.txt"]`)+"&token="+tok, nil))
+	})
+
+	t.Run("TokengenForPageLinks", func(t *testing.T) {
+		// The page adds tokengen to the zip links it will download
+		tok := tokenFor(t, base+"d/?zip=&tokengen=")
+		assert.Equal(t, http.StatusOK, status("GET", base+"d/?zip&token="+tok, nil))
+		tok = tokenFor(t, base+"d/?zip=multi&paths="+url.QueryEscape(`["x.txt"]`)+"&tokengen=")
+		assert.Equal(t, http.StatusOK, status("GET", base+"d/?zip&token="+tok, nil))
+	})
+
+	t.Run("RootDirectory", func(t *testing.T) {
+		tok := tokenFor(t, base+"?tokengen")
+		_, body := doRequest(t, "GET", base+"?zip&token="+tok, nil)
+		assert.Equal(t, "xx", zipEntries(t, body)["d/x.txt"])
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, nil))
+	})
+
+	t.Run("WrongCredentials", func(t *testing.T) {
+		tok := tokenFor(t, base+"f.txt?tokengen")
+		// Credentials are for the auth to judge, whatever the token says
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, basic(testUser, "wrong")))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, basic("nobody", testPass)))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, map[string]string{"Authorization": "Bearer abc"}))
+		// With right ones it is the ordinary download
+		assert.Equal(t, http.StatusOK, status("GET", base+"f.txt?token="+tok, creds))
+	})
+
+	t.Run("ActiveFilesSandboxed", func(t *testing.T) {
+		tok := tokenFor(t, base+"page.html?tokengen")
+		resp, body := doRequest(t, "GET", base+"page.html?token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "<script>1</script>", body)
+		assert.Equal(t, "sandbox", resp.Header.Get("Content-Security-Policy"))
+
+		tok = tokenFor(t, base+"f.txt?tokengen")
+		resp, _ = doRequest(t, "GET", base+"f.txt?token="+tok, nil)
+		assert.Empty(t, resp.Header.Get("Content-Security-Policy"))
+	})
+
+	t.Run("OtherServer", func(t *testing.T) {
+		other := startWebUIDir(t, dir, withAuth, nil, nil)
+		tok := tokenFor(t, base+"f.txt?tokengen")
+		assert.Equal(t, http.StatusUnauthorized, status("GET", other+"f.txt?token="+tok, nil))
+	})
+
+	t.Run("Secret", func(t *testing.T) {
+		secret := func(o *webui.Options) { o.Secret = "s3cret" }
+		a := startWebUIDir(t, dir, withAuth, secret, nil)
+		b := startWebUIDir(t, dir, withAuth, secret, nil)
+		tok := tokenFor(t, a+"f.txt?tokengen")
+		assert.Equal(t, http.StatusOK, status("GET", b+"f.txt?token="+tok, nil))
+	})
+
+	t.Run("Expired", func(t *testing.T) {
+		short := startWebUIDir(t, dir, withAuth, func(o *webui.Options) { o.TokenExpiry = fs.Duration(time.Millisecond) }, nil)
+		tok := tokenFor(t, short+"f.txt?tokengen")
+		time.Sleep(50 * time.Millisecond)
+		assert.Equal(t, http.StatusUnauthorized, status("GET", short+"f.txt?token="+tok, nil))
+	})
+
+	t.Run("ZipDisabled", func(t *testing.T) {
+		noZip := startWebUIDir(t, dir, func(opt *Options) {
+			withAuth(opt)
+			opt.DisableZip = true
+		}, nil, nil)
+		tok := tokenFor(t, noZip+"d/?tokengen")
+		assert.Equal(t, http.StatusForbidden, status("GET", noZip+"d/?zip&token="+tok, nil))
+	})
+
+	t.Run("BaseURL", func(t *testing.T) {
+		pfx := startWebUIDir(t, dir, func(opt *Options) {
+			withAuth(opt)
+			opt.HTTP.BaseURL = "/pfx"
+		}, nil, nil)
+		tok := tokenFor(t, pfx+"f.txt?tokengen")
+		resp, body := doRequest(t, "GET", pfx+"f.txt?token="+tok, nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "0123456789", body)
+		dtok := tokenFor(t, pfx+"d/?tokengen")
+		assert.Equal(t, http.StatusOK, status("GET", pfx+"d/?zip&token="+dtok, nil))
+
+		// Outside the base URL the router or the auth answers, so there is no download
+		root := strings.TrimSuffix(strings.TrimSuffix(pfx, "/"), "/pfx")
+		for _, p := range []string{"/f.txt", "/pfxf.txt", "/pfx.txt", "/pfx"} {
+			assert.Contains(t, []int{http.StatusUnauthorized, http.StatusNotFound}, status("GET", root+p+"?token="+tok, nil), p)
+		}
+	})
+
+	t.Run("NoAuth", func(t *testing.T) {
+		// Without auth there is nothing to bypass: tokens are not made and
+		// are not looked at, and the server serves what it always did
+		open := startWebUIDir(t, dir, nil, nil, nil)
+		resp, body := doRequest(t, "GET", open+"f.txt?tokengen", nil)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, body)
+		_, body = doRequest(t, "GET", open+"f.txt?token=x", nil)
+		assert.Equal(t, "0123456789", body)
+	})
+
+	t.Run("PathChecks", func(t *testing.T) {
+		tok := tokenFor(t, base+"f.txt?tokengen")
+		root := strings.TrimSuffix(base, "/")
+		for _, p := range []string{"/d/../f.txt", "/d/%2e%2e/f.txt", "/./f.txt", "/d/sub/../../f.txt"} {
+			assert.NotEqual(t, http.StatusOK, status("GET", root+p+"?token="+tok, nil), p)
+		}
+	})
+}
+
+// mustRead returns the content of the file
+func mustRead(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(name)
+	require.NoError(t, err)
+	return string(data)
+}

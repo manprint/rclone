@@ -40,6 +40,7 @@ type UI struct {
 	rawTpl     string                          // page template with the overlay script injected
 	resume     *resumeStore                    // playback positions, nil if they aren't remembered
 	publicWrap func(http.Handler) http.Handler // CORS and response headers for requests handled before authentication
+	keys       keys                            // signs download tokens and public links
 }
 
 // New creates a web UI for the server described by cfg
@@ -54,12 +55,17 @@ func New(cfg Config, opt Options) (*UI, error) {
 	if cfg.BaseURL == nil {
 		return nil, errors.New("no BaseURL in config")
 	}
+	k, err := deriveKeys(opt.Secret)
+	if err != nil {
+		return nil, err
+	}
 	cors := libhttp.MiddlewareCORS(cfg.AllowOrigin)
 	respHeaders := libhttp.MiddlewareResponseHeaders(headers)
 	return &UI{
 		cfg:    cfg,
 		opt:    opt,
 		resume: newResume(opt),
+		keys:   k,
 		rawTpl: strings.Replace(indexHTML, overlayTag,
 			overlayTag+"\n  <script src=\"__ASSETS_PREFIX__overlay.js\"></script>", 1),
 		publicWrap: func(h http.Handler) http.Handler {
@@ -100,7 +106,8 @@ func (u *UI) baseSlash() string {
 
 // PreAuth returns the handler for requests which need no authentication
 //
-// This is the assets. Everything else is passed to next.
+// This is the assets and the downloads with a valid token, for which a
+// request must carry no credentials. Everything else is passed to next.
 func (u *UI) PreAuth(next http.Handler) http.Handler {
 	assets := u.publicWrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveAsset(w, r, strings.TrimPrefix(u.relPath(r), "/"+assetsPrefix))
@@ -110,22 +117,26 @@ func (u *UI) PreAuth(next http.Handler) http.Handler {
 			assets.ServeHTTP(w, r)
 			return
 		}
+		if h := u.tokenDownload(r); h != nil {
+			h.ServeHTTP(w, r)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
 
 // Handler returns the handler for authenticated requests
 //
-// It serves the directory, edit and view pages and the operations of
-// browsers, and sandboxes the files which can run scripts. Everything
-// else is passed to next.
+// It serves the tokens for downloads, the directory, edit and view pages
+// and the operations of browsers, and sandboxes the files which can run
+// scripts. Everything else is passed to next.
 func (u *UI) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if u.cfg.CheckPath(r.URL.Path) != nil {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if u.serveWrite(w, r) || u.serveResume(w, r) || u.serveEdit(w, r) || u.serveListing(w, r) {
+		if u.serveTokengen(w, r) || u.serveWrite(w, r) || u.serveResume(w, r) || u.serveEdit(w, r) || u.serveListing(w, r) {
 			return
 		}
 		sandboxActive(w, r)
@@ -138,7 +149,7 @@ func (u *UI) Handler(next http.Handler) http.Handler {
 func (u *UI) relPath(r *http.Request) string {
 	base := strings.TrimSuffix(u.baseSlash(), "/")
 	rel, ok := strings.CutPrefix(r.URL.Path, base)
-	if !ok {
+	if !ok || (rel != "" && rel[0] != '/') {
 		return ""
 	}
 	return rel

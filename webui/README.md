@@ -1,19 +1,52 @@
 # webui — interfaccia web per `rclone serve webdav`
 
+## Scopo
+
 Questo package aggiunge a `rclone serve webdav` l'interfaccia web di
 superdufs (un fork di [dufs](https://github.com/sigoden/dufs)): un browser che apre il server vede una pagina
-con navigazione delle cartelle, upload, download e gestione dei file invece del semplice elenco HTML.
-I client WebDAV e la riga di comando non sono interessati: il protocollo WebDAV resta quello upstream.
+con navigazione delle cartelle, upload, download, ricerca, modifica dei file di testo, player multimediale
+e gestione dei file invece del semplice elenco HTML. I client WebDAV e la riga di comando non sono
+interessati: il protocollo WebDAV resta quello upstream.
 
 Il package è un'aggiunta del fork: l'unica modifica a file upstream sono tre righe marcate
 `// fork:webui` in `cmd/serve/webdav/webdav.go`; il resto è in `webui/` e in
-`cmd/serve/webdav/webdav_webui*.go`. Lo script `scripts/check-footprint.sh` lo verifica.
+`cmd/serve/webdav/webdav_webui*.go`. Lo script `scripts/check-footprint.sh` lo verifica. Questo file è
+l'unica documentazione del fork: la documentazione upstream non è modificata.
+
+L'interfaccia è attiva per default. Resta spenta (comportamento identico a upstream) con `--webui=false`,
+con `--template` oppure con `--disable-dir-list`.
+
+## Avvio rapido
+
+Serve un remote (o una cartella locale) su tutte le interfacce, porta 8000, aprendolo poi con un browser
+su `http://host:8000/`:
+
+```bash
+rclone serve webdav --addr 0.0.0.0:8000 myremote:
+```
+
+Esempio più completo, con autenticazione, cache di scrittura (necessaria per riprendere gli upload
+interrotti), link pubblici per una cartella e segreto passato con la variabile d'ambiente, così non compare
+nella riga di comando:
+
+```bash
+export RCLONE_WEBUI_SECRET='una-frase-lunga-e-casuale'
+rclone serve webdav --addr 0.0.0.0:8000 \
+    --user alice --pass 'password' \
+    --vfs-cache-mode writes \
+    --webui-publink-paths /condivisi \
+    myremote:
+```
+
+Anche `--pass` è visibile con `ps`: su una macchina condivisa usa `--htpasswd` con un file htpasswd.
+Per usare il server solo come WebDAV, senza pagina, aggiungi `--webui=false`.
 
 ## Flag
 
-L'interfaccia è attiva per default. Resta spenta (comportamento identico a upstream) con `--webui=false`,
-con `--template` oppure con `--disable-dir-list`. Ogni flag ha la corrispondente variabile d'ambiente
-`RCLONE_<NOME>` (es. `RCLONE_WEBUI_SEARCH`) e, per `rc`, il blocco di opzioni `webdav_webui`.
+Ogni flag ha la corrispondente variabile d'ambiente `RCLONE_<NOME>` (es. `RCLONE_WEBUI_SEARCH`) e, per
+`rc`, il blocco di opzioni `webdav_webui`. L'elenco si ottiene anche con `rclone serve webdav --help`.
+
+### Flag dell'interfaccia
 
 | Flag | Default | Descrizione |
 |------|---------|-------------|
@@ -24,10 +57,10 @@ con `--template` oppure con `--disable-dir-list`. Ogni flag ha la corrispondente
 | `--webui-search-timeout` | `30s` | Durata massima di una ricerca |
 | `--webui-publink-paths` | vuoto | Percorsi (e il loro contenuto) per cui si creano link pubblici di sola lettura; `/` indica tutto |
 | `--webui-secret` | vuoto | Segreto con cui sono firmati i token dell'interfaccia (sensibile) |
-| `--webui-token-expiry` | `72h` | Durata dei token di download |
+| `--webui-token-expiry` | `72h` (`3d` nell'help) | Durata dei token di download |
 | `--webui-resume` | `false` | Ricorda la posizione di riproduzione dei file multimediali |
 | `--webui-resume-dir` | vuoto | Cartella dove sono salvate le posizioni di riproduzione |
-| `--webui-resume-retention` | `720h` | Per quanto tempo si conservano le posizioni non usate |
+| `--webui-resume-retention` | `720h` (`1M` nell'help) | Per quanto tempo si conservano le posizioni non usate |
 | `--webui-player-max-retry` | `30` | Tentativi massimi di riconnessione del player |
 | `--webui-player-reconnect-interval` | `10` | Secondi tra i tentativi di riconnessione del player |
 | `--webui-disk-stats` | `false` | Mostra le statistiche di spazio disco |
@@ -36,8 +69,39 @@ con `--template` oppure con `--disable-dir-list`. Ogni flag ha la corrispondente
 | `--webui-dir-count` | `false` | Mostra il numero di elementi delle cartelle |
 | `--webui-multi-zip-max` | `200` | Numero massimo di elementi di uno zip da selezione multipla |
 
-Le funzioni associate a ciascun flag sono introdotte dalle fasi successive del piano: i flag sono già
-registrati, ma finché la funzione non esiste il valore non ha effetto.
+Note:
+
+- `--webui-dir-count`: la colonna dimensione delle cartelle mostra il numero di elementi (al massimo 1000)
+  invece di un trattino. Costa un elenco di ogni sottocartella a ogni apertura della pagina, quindi è
+  spento per default; se una sottocartella non si può leggere resta il trattino.
+- `--webui-search`, `--webui-disk-stats`: attivano la ricerca e le statistiche di spazio (sezione
+  "Ricerca e statistiche") e i campi `allow_search` ed `enable_data_stats` dei dati della pagina.
+- `--webui-upload-settings`: mostra nella pagina le impostazioni degli upload concorrenti (campo
+  `show_concurrent_uploads_settings` dei dati della pagina); la scelta è del browser e il server non ha
+  limiti propri.
+- `--webui-player-max-retry`, `--webui-player-reconnect-interval`: sono passati al player della pagina
+  `?view`, che li usa per riconnettersi quando il flusso si interrompe.
+- `--webui-token-expiry`: un valore minore o uguale a zero fa scadere subito i token di download.
+- `--webui-resume-retention`: `0` conserva le posizioni di riproduzione per sempre.
+
+### Flag di rclone che influenzano l'interfaccia
+
+| Flag | Effetto sull'interfaccia |
+|------|--------------------------|
+| `--read-only` | La pagina nasconde upload e cancellazione (`allow_upload` e `allow_delete` falsi); un `PUT` dal browser passa all'upstream, che lo rifiuta |
+| `--disable-zip` | La pagina non offre lo scarico come archivio (`allow_archive` falso) e `?zip`, `?zip=multi` rispondono `403`, come lo zip upstream (`?download=zip`) che lo stesso flag disattiva |
+| `--template` | L'interfaccia resta spenta: si ottiene il comportamento upstream con il template scelto |
+| `--disable-dir-list` | L'interfaccia resta spenta |
+| `--baseurl` | Prefisso di tutti gli URL, anche quelli degli asset e dei link pubblici (`<baseurl>/@public/...`); i redirect lo mantengono |
+| `--user`, `--pass`, `--htpasswd` | Autenticazione del server. Con l'autenticazione attiva la pagina chiede i token di download (`?tokengen`), conosce l'utente (`CHECKAUTH`) e può fare il logout (`LOGOUT`) |
+| `--user-from-header`, certificati client (`--client-ca`) | Contano come autenticazione: l'utente è quello del header o del certificato, e i token di download e i link pubblici funzionano come con `--user`/`--pass` |
+| `--realm` | Realm dell'autenticazione Basic, usato anche dalla risposta a `LOGOUT` (default `rclone`) |
+| `--auth-proxy` | La VFS dipende dall'utente: i token di download e i link pubblici sono spenti (la pagina scarica con le credenziali del browser) |
+| `--vfs-cache-mode` | Con `off` o `minimal` un upload interrotto cancella il file parziale e la ripresa (`PATCH` append) non è disponibile; con `writes` o `full` il parziale è tenuto e l'upload riprende |
+| `--no-modtime` | Le date di modifica sono `0` e la pagina lascia vuota la colonna |
+| `--allow-origin` | Consente a un'altra origine il preflight CORS dei metodi di scrittura (vedi "Sicurezza") |
+| `--response-header` | Gli header impostati valgono anche per le risposte dell'interfaccia, compresi asset, download con token e link pubblici serviti senza credenziali |
+| `--dir-cache-time`, `--vfs-disk-space-total-size`, `--vfs-used-is-size` | Cache degli elenchi e valori delle statistiche di spazio (vedi "Ricerca e statistiche") |
 
 ## Interfaccia web
 
@@ -70,22 +134,14 @@ slash puntavano alla cartella superiore. I client che non sono browser continuan
 upstream (`405` per un `GET` su una cartella senza slash). Se il percorso non esiste o è un file, la
 richiesta passa all'upstream.
 
-### Flag che influenzano la pagina
+### Scarico come zip
 
-- `--read-only`: la pagina nasconde upload e cancellazione (`allow_upload` e `allow_delete` falsi).
-- `--disable-zip`: la pagina non offre lo scarico come archivio (`allow_archive` falso) e `?zip`,
-  `?zip=multi` rispondono `403`, come lo zip upstream (`?download=zip`) che lo stesso flag disattiva.
-- `--no-modtime`: le date di modifica sono `0` e la pagina lascia vuota la colonna.
-- `--template`: l'interfaccia resta spenta e si ottiene il comportamento upstream con il template scelto.
-- `--disable-dir-list`: l'interfaccia resta spenta.
-- `--webui=false`: l'interfaccia resta spenta.
-- `--webui-dir-count`: la colonna dimensione delle cartelle mostra il numero di elementi (al massimo 1000)
-  invece di un trattino. Costa un elenco di ogni sottocartella a ogni apertura della pagina, quindi è
-  spento per default; se una sottocartella non si può leggere resta il trattino.
-- `--webui-search`, `--webui-disk-stats`: attivano la ricerca e le statistiche di spazio (sezione
-  "Ricerca e statistiche") e i campi `allow_search` ed `enable_data_stats` dei dati della pagina.
-- `--webui-upload-settings`: controlla soltanto il campo `show_concurrent_uploads_settings` dei dati della
-  pagina; la funzione corrispondente arriva nelle fasi successive.
+`GET <cartella>/?zip` scarica la cartella come archivio, chiamato `<nome cartella>.zip` (`root.zip` per la
+radice); `GET <cartella>/?zip=multi&paths=["a","b/c"]` scarica la selezione fatta nella pagina, chiamata
+`selection.zip`. `paths` è un array JSON di percorsi relativi alla cartella (al massimo 8192 caratteri e
+`--webui-multi-zip-max` elementi); percorsi con `.` o `..` sono rifiutati con `400`, un percorso inesistente
+dà `404`. Con `--disable-zip` entrambi rispondono `403`. L'archivio è scritto mentre si legge: un errore a
+metà lascia un file senza elenco finale (non confondibile con uno completo) e si legge solo nel log.
 
 ## Comportamento con client WebDAV
 
@@ -111,19 +167,9 @@ spenta).
   esistente la cancellerebbe con tutto il contenuto.
 - `?edit` e `?view` su un file aprono l'editor o il player della pagina; un file è modificabile se non
   supera `--webui-edit-max-size` e i primi 1024 byte sono testo UTF-8 senza byte nulli.
-- I file `.html`, `.htm`, `.xhtml`, `.svg`, `.svgz`, `.xml`, `.xsl` sono serviti con
-  `Content-Security-Policy: sandbox`: una pagina caricata sul server non può eseguire script con le
-  credenziali di chi la apre.
 
-Note e limiti:
-
-- Un upload che sovrascrive un file esistente e si interrompe fa perdere il contenuto originale (il file
-  è troncato all'apertura): è lo stesso comportamento dell'upstream e di superdufs.
-- `PUT` e `PATCH` dal browser non controllano i lock WebDAV e ignorano `X-OC-Mtime`, che il browser
-  non usa.
-- Le richieste `PUT`, `PATCH`, `MOVE`, `CHECKAUTH` da un altro sito richiedono un preflight CORS, che
-  riesce solo se `--allow-origin` lo consente. Un client WebDAV web servito da un'altra origine e
-  autorizzato con `--allow-origin` invia `Origin` e riceve quindi le regole del browser descritte sopra.
+Le regole di sicurezza che riguardano i browser (sandbox dei file attivi, preflight CORS) sono nella
+sezione "Sicurezza"; i limiti di questi comportamenti sono in "Limiti noti".
 
 ## Ripresa riproduzione
 
@@ -253,6 +299,56 @@ scrive nulla sul remote. L'unica scrittura è quella delle posizioni di riproduz
 `?resume-save`, `?resume-clear`, sui soli file) nell'archivio locale di `--webui-resume`, chiave per
 percorso, che è lo stesso usato dalle richieste autenticate.
 
+## Sicurezza
+
+### Pagine e file serviti
+
+- Le pagine HTML escono con `Cache-Control: no-cache`, `X-Content-Type-Options: nosniff` e una
+  `Content-Security-Policy` (`frame-ancestors 'self'; object-src 'none'; base-uri 'self'`) che vieta frame di
+  altri siti, `object` e `base` esterni.
+- I file `.html`, `.htm`, `.xhtml`, `.svg`, `.svgz`, `.xml`, `.xsl` sono serviti con
+  `Content-Security-Policy: sandbox`: una pagina caricata sul server non può eseguire script con le
+  credenziali di chi la apre. La scelta è per estensione, vedi "Limiti noti".
+- Ogni percorso toccato dall'interfaccia passa dal controllo dei percorsi dell'upstream (`checkPath`,
+  che rifiuta gli elementi `.` e `..`); un percorso non valido non è mai servito dall'interfaccia e la
+  richiesta va all'upstream.
+- Gli asset (`index.js`, `index.css`, `favicon.ico`, `overlay.js`) sono serviti senza autenticazione sotto
+  `/<baseurl>/__webui_<hash>__/`: sono identici per tutti e non contengono dati del server.
+
+### Browser e client WebDAV
+
+Le regole speciali per le scritture (cartelle padre create da `PUT`, `PATCH` append, rifiuto di `MOVE` su una
+cartella esistente) valgono solo per le richieste con intestazione `Origin`, che i browser aggiungono ai
+metodi diversi da `GET` e `HEAD`. I client WebDAV (rclone, davfs2, cadaver, Windows) non la inviano e
+ricevono le risposte upstream.
+
+`MOVE` dal browser senza intestazione `Overwrite` verso una cartella esistente risponde `412 Destination
+folder exists`: la pagina non chiede conferma per le cartelle e l'upstream, in assenza di `Overwrite`,
+sovrascrive, cancellando la destinazione con tutto il contenuto. Un client con `Overwrite` esplicito è
+trattato come upstream.
+
+La pagina HTML è servita solo a una richiesta `GET` o `HEAD` che accetta `text/html` e il cui `User-Agent`
+non è di un programma da riga di comando (vedi "Fallback per la riga di comando"). La decisione non è una
+misura di sicurezza: l'accesso ai dati è sempre soggetto all'autenticazione.
+
+### CORS e preflight
+
+Le richieste `PUT`, `PATCH`, `MOVE`, `CHECKAUTH` da un altro sito richiedono un preflight CORS, che
+riesce solo se `--allow-origin` lo consente. Un client WebDAV web servito da un'altra origine e autorizzato
+con `--allow-origin` invia `Origin` e riceve quindi le regole del browser descritte sopra. Le risposte
+servite prima dell'autenticazione (asset, link pubblici, token) applicano gli stessi CORS e le stesse
+intestazioni di risposta del resto del server.
+
+### Autenticazione, token e link pubblici
+
+Le uniche richieste servite senza credenziali sono i `GET` e `HEAD` di asset, di link pubblici
+`<baseurl>/@public/<token>/<percorso>` validi e di `?token=<token>` validi (sezione "Link di download e
+link pubblici"). Tutto il resto, comprese le scritture su un link pubblico, richiede l'autenticazione
+del server e senza risponde `401`. Un token di download vale per un solo file o per lo zip di una
+sola cartella; un token di link pubblico vale per un percorso e il suo contenuto; entrambi sono firmati con
+HMAC e verificati a tempo costante. I token di download hanno scadenza (`--webui-token-expiry`), i link
+pubblici no: si revocano togliendo il percorso da `--webui-publink-paths` o cambiando il segreto.
+
 ### Segreto e chiavi
 
 Le chiavi che firmano i token di download e i link pubblici derivano da `--webui-secret`. Senza segreto sono
@@ -267,18 +363,144 @@ Il package non scrive nel log chiavi né token. I log upstream riportano però i
 arrivano all'autenticazione o al server WebDAV, per esempio un `PUT` a un URL `@public/<token>/...` (rifiutato
 con `401` e registrato come "Unauthorized request", oppure autenticato): il token è nel percorso.
 
-### Limiti noti
+## Limiti noti
 
-I file che il browser eseguirebbe (`.html`, `.htm`, `.xhtml`, `.svg`, `.svgz`, `.xml`, `.xsl`) sono serviti
-con `Content-Security-Policy: sandbox`, così gli script non raggiungono il server con le credenziali
-dell'utente. La scelta è per estensione: un file senza estensione il cui contenuto è HTML non è isolato
-(come in rclone upstream).
+- **Ripresa degli upload.** Riprendere un upload interrotto (`PATCH` con `X-Update-Range: append`) richiede
+  `--vfs-cache-mode writes` o `full`; con `off` o `minimal` risponde `405` e un upload incompleto lascia il
+  posto a un file cancellato, quindi si ricomincia da capo.
+- **Sovrascrittura interrotta.** Un upload che sovrascrive un file esistente e si interrompe fa perdere il
+  contenuto originale (il file è troncato all'apertura): è lo stesso comportamento dell'upstream e di
+  superdufs.
+- **Lock e data di modifica.** `PUT` e `PATCH` dal browser non controllano i lock WebDAV e ignorano
+  `X-OC-Mtime`, che il browser non usa.
+- **Conteggio delle cartelle.** Con `--webui-dir-count` ogni apertura della pagina costa un elenco per
+  ogni sottocartella; per questo è spento per default. Senza il flag le cartelle non hanno dimensione (un
+  trattino).
+- **Ricerca.** Costa un elenco di ogni cartella visitata e, se raggiunge un limite, dà un elenco parziale
+  senza segnalarlo come errore.
+- **Link non stabili senza segreto.** Senza `--webui-secret` i token di download e i link pubblici sono
+  firmati con chiavi casuali e smettono di funzionare a ogni riavvio. I token di download non funzionano con
+  `--auth-proxy` né senza autenticazione; i link pubblici sono spenti con `--auth-proxy`.
+- **Nome `@public` riservato.** Con i link pubblici accesi una cartella reale `@public` nella radice non è
+  leggibile con `GET` o `HEAD`.
+- **Date delle cartelle.** La data di modifica delle cartelle è quella che riporta il backend: molti
+  remote non la gestiscono in modo significativo.
+- **Sandbox per estensione.** I file che il browser eseguirebbe (`.html`, `.htm`, `.xhtml`, `.svg`, `.svgz`,
+  `.xml`, `.xsl`) sono isolati con `Content-Security-Policy: sandbox`, ma la scelta è per estensione: un file
+  senza estensione il cui contenuto è HTML non è isolato (come in rclone upstream).
+- **Percorso nei link pubblici.** Nella pagina di un link pubblico le voci del percorso in alto che stanno
+  sopra la cartella condivisa (compresa la radice) puntano a URL che il token non copre e rispondono `404`;
+  nella pagina `?view` di un file portano alle pagine autenticate del server, che chiedono le credenziali.
+- **Posizioni di ripresa.** Sono per remote e percorso e condivise da tutti gli utenti dello stesso remote;
+  rinominare o spostare un file ne perde la posizione.
+- **Zip.** Un errore dopo l'inizio dello scarico lascia un archivio incompleto (senza elenco finale) e si
+  legge solo nel log.
+- **Log.** I log upstream riportano il percorso delle richieste, e un token di link pubblico è nel
+  percorso (vedi "Sicurezza").
 
-Nella pagina di un link pubblico le voci del percorso in alto che stanno sopra la cartella condivisa
-(compresa la radice) puntano a URL che il token non copre e rispondono `404`; nella pagina `?view` di un
-file portano alle pagine autenticate del server, che chiedono le credenziali.
+## Architettura del fork
+
+### Dove sta il codice
+
+| File | Contenuto |
+|------|-----------|
+| `webui/options.go` | I flag `--webui*` e il blocco di opzioni `webdav_webui` (anche per `rc`) |
+| `webui/ui.go` | `UI`, `Config` e `New`; `PreAuth` e `Handler`, i due middleware, e il dispatch delle richieste |
+| `webui/assets.go` | Incorpora gli asset, calcola l'hash del prefisso `__webui_<hash>__` e li serve con cache immutabile |
+| `webui/listing.go` | Elenco di una cartella: pagina, `?json`, ordinamento, redirect delle cartelle senza slash, conteggio |
+| `webui/data.go` | Strutture dei dati incorporati nella pagina (`IndexData`, `EditData`) e ordinamento naturale |
+| `webui/edit.go` | `?edit` e `?view`, controllo dei file modificabili, sandbox dei file attivi |
+| `webui/files.go` | Scarico di un file |
+| `webui/write.go` | Scritture dei browser: `CHECKAUTH`, `LOGOUT`, `PUT`, `PATCH` append, guardia del `MOVE` |
+| `webui/zip.go` | Scarico come zip di una cartella o di una selezione |
+| `webui/search.go` | Ricerca ricorsiva (`?q`) e statistiche di spazio (`?disk-stats`) |
+| `webui/resume.go` | Posizioni di riproduzione (`?resume-get`, `?resume-save`, `?resume-clear`) |
+| `webui/token.go` | Chiavi derivate dal segreto, token di download (`?tokengen`, `?token`) |
+| `webui/public.go` | Link pubblici `@public` |
+| `webui/util.go` | Funzioni comuni: intestazione `Origin`, utente, percorsi di destinazione, errori |
+| `webui/assets/` | Asset di superdufs, byte per byte, e `SOURCE` (provenienza) |
+| `webui/overlay/overlay.js` | Le sole correzioni JavaScript del fork, caricate dopo `index.js` |
+| `webui/scripts/` | `check-footprint.sh`, `sync-assets.sh`, `sync-upstream.sh`, `smoke.sh`, `build.sh` |
+| `cmd/serve/webdav/webdav_webui.go` | Il collegamento tra `serve webdav` e il package: registra i flag, crea la UI se le condizioni lo permettono e la aggancia al server |
+
+Il package `webui` non conosce `serve webdav`: riceve tutto dal glue attraverso `webui.Config` (VFS,
+controllo dei percorsi, autenticazione, realm, `--disable-zip`, CORS e intestazioni di risposta). Così le
+modifiche upstream a `serve webdav` toccano solo il glue.
+
+### Le tre righe in `webdav.go`
+
+L'unica modifica a un file upstream, in `cmd/serve/webdav/webdav.go`, sono tre righe aggiunte, ognuna col
+commento `// fork:webui` e nessuna riga upstream cambiata:
+
+1. il campo `webui *webuiGlue` nella struttura `WebDAV`;
+2. l'opzione `w.webuiPreAuth()` nella chiamata a `libhttp.NewServer`;
+3. la chiamata `w.webuiUse(router)` dopo gli altri middleware e prima di `router.Handle`.
+
+`check-footprint.sh` fallisce se il fork tocca altri file upstream, se `webdav.go` ha righe tolte o
+cambiate, o più di tre righe aggiunte.
+
+### PreAuth e Handler
+
+```
+richiesta -> [PreAuth] -> StripPrefix -> CORS -> intestazioni -> AUTH -> VFS -> gzip
+          -> [Handler] -> WebDAV upstream
+```
+
+`PreAuth` è registrato come opzione di `libhttp.NewServer`, quindi è il più esterno e vede le richieste prima
+dell'autenticazione: serve soltanto asset, link pubblici validi e token di download validi; tutto il resto
+passa avanti. Per questo riapplica da sé CORS e intestazioni di risposta. `Handler` è registrato come
+ultimo middleware prima delle rotte e serve, già autenticato, le pagine, le scritture dei browser, la
+ricerca e il resto; ciò che non è interfaccia passa al server WebDAV upstream. Questo ordine dipende da
+come `libhttp.NewServer` registra le opzioni e i middleware: lo proteggono `TestPreAuthBoundaries` e
+`TestPublinkBoundaries`, da guardare dopo ogni sincronizzazione con upstream.
+
+### Asset e overlay
+
+Gli asset di superdufs sono incorporati senza modifiche: `TestAssetsMatchSource` confronta i loro sha256 con
+`assets/SOURCE`. L'unico adattamento JavaScript è `overlay/overlay.js` (oggi, la dimensione delle cartelle
+sconosciuta mostrata come trattino), iniettato nella pagina subito dopo il tag di `index.js`. Se il template
+cambia e quel tag non compare esattamente una volta, `webui.New` fallisce: il server parte, scrive
+"webui disabled" nel log e si comporta come upstream.
+
+### Perché lo zip non usa `vfs.CreateZip`
+
+`vfs.CreateZip` dà alle cartelle oltre il secondo livello un nome che ripete il prefisso (concatena la radice
+e il percorso completo della cartella): un archivio con cartelle annidate ha nomi sbagliati. `zip.go`
+costruisce da sé l'archivio, con le stesse scelte di compressione (Deflate per i file, Store per le
+cartelle). Correggere `vfs.CreateZip` sarebbe una modifica a un file upstream, vietata dal footprint.
 
 ## Sincronizzazione
+
+### Con upstream rclone
+
+Il fork vive su un ramo (`feat/webdav-frontend`) che segue `master` di upstream. Per aggiornarlo, con
+l'albero di lavoro pulito (i file non tracciati sono ammessi):
+
+```bash
+git remote add upstream https://github.com/rclone/rclone.git   # una volta sola
+git config rerere.enabled true                                 # una volta sola, vedi sotto
+webui/scripts/sync-upstream.sh
+```
+
+Lo script, che non fa mai push, esegue nell'ordine: `git fetch`, `git merge --no-edit upstream/master` con
+`rerere` acceso e poi i controlli `webui/scripts/check-footprint.sh` (confronto con il ramo appena unito),
+`go build ./...`, `go test ./webui/... ./cmd/serve/webdav/ ./lib/http/...` e
+`RCLONE_WEBUI=false go test ./cmd/serve/webdav/`. Stampa `OK` solo se tutto passa. Se non esiste il
+remote `upstream` usa `origin`. Con `UPSTREAM_REMOTE` e `UPSTREAM_BRANCH` si scelgono un altro remote
+e un altro ramo.
+
+`rerere` ricorda come è stato risolto un conflitto e lo riapplica al conflitto successivo: tienilo
+acceso (`git config rerere.enabled true`), il conflitto è sempre lo stesso.
+
+In caso di conflitto lo script elenca i file in conflitto ed esce con `1`, senza interrompere il merge. Per
+risolvere: tieni il codice upstream; in `cmd/serve/webdav/webdav.go` riaggiungi le tre righe `// fork:webui`
+descritte sopra; poi `git add`, `git commit` e rilancia lo script (il merge è già fatto, esegue solo i
+controlli). Per rinunciare: `git merge --abort`.
+
+Dopo ogni sincronizzazione, se `go test` fallisce nei test di PreAuth, upstream ha cambiato l'ordine dei
+middleware o delle opzioni di `libhttp.NewServer`: va adattato il glue, non gli asset.
+
+### Con superdufs
 
 Gli asset (`assets/index.html`, `index.js`, `index.css`, `favicon.ico`) sono copiati byte per byte da
 superdufs; `overlay/overlay.js` contiene le sole correzioni del fork e viene caricato dopo `index.js`.
@@ -291,10 +513,67 @@ webui/scripts/sync-assets.sh /percorso/a/superdufs
 ```
 
 Lo script copia i file, riscrive `SOURCE` e lancia `go test ./webui/ -run 'TestAssets|TestAPISurface'`.
-Il test `TestAssetsMatchSource` fallisce se gli asset incorporati non corrispondono a `SOURCE`.
+`TestAssetsMatchSource` fallisce se gli asset incorporati non corrispondono a `SOURCE`.
+
+`TestAPISurfaceLock` legge l'`index.js` incorporato, ne estrae i parametri di query e i metodi HTTP che usa e
+li confronta con gli insiemi attesi in `webui/surface_test.go` (`expectedQueries`, `expectedMethods`, ognuno
+con chi risponde). Se il test fallisce, il messaggio elenca i nomi nuovi e quelli spariti: la pagina nuova
+usa una parte di protocollo che il server non conosce. Per ogni nome nuovo:
+
+1. guarda nella cronologia di superdufs a che cosa serve;
+2. se è una funzione del server, implementala in `webui/` con il suo test; se è solo del browser (il server
+   la ignora), aggiungi il nome all'insieme atteso con la nota;
+3. per un nome sparito, toglilo dall'insieme atteso e, se non serve più, dal server;
+4. rilancia `go test ./webui/`.
+
+Non si pubblica un aggiornamento degli asset finché il test non passa: significherebbe offrire pulsanti che
+il server non sa servire.
+
+`TestOverlayNode` (richiede `node`, altrimenti è saltato) controlla con `node --check` che `index.js` e
+`overlay.js` siano sintatticamente validi e lancia `overlay/overlay_test.mjs`, che carica `index.js` e poi
+l'overlay e verifica che la funzione sostituita si comporti come l'originale per i valori che l'overlay non
+cambia. Se fallisce dopo un aggiornamento, un nome usato dall'overlay è cambiato in `index.js`: aggiorna
+`overlay.js`.
 
 Per controllare che il fork non tocchi file upstream oltre a quelli consentiti:
 
 ```bash
 webui/scripts/check-footprint.sh   # stampa "footprint OK"
 ```
+
+Il confronto è con `upstream/master` se esiste il remote `upstream`, altrimenti con `origin/master`;
+`UPSTREAM_REF` sceglie un altro riferimento.
+
+## Test
+
+Dalla radice del repository (`RCLONE_CONFIG=/notfound` evita di leggere la configurazione locale):
+
+```bash
+go build ./...
+go test ./webui/... ./cmd/serve/webdav/ ./lib/http/...
+RCLONE_WEBUI=false go test ./cmd/serve/webdav/    # la suite upstream con l'interfaccia spenta
+webui/scripts/check-footprint.sh
+```
+
+Il secondo giro di `cmd/serve/webdav` con `RCLONE_WEBUI=false` dimostra che a interfaccia spenta il
+comportamento è quello upstream. Prima di consegnare conviene anche `go test -race` sugli stessi pacchetti
+e `golangci-lint run ./webui/... ./cmd/serve/webdav/...`.
+
+`webui/scripts/smoke.sh` è la prova su un binario vero: compila rclone in una cartella temporanea, serve
+una cartella temporanea e verifica la pagina per i browser, l'elenco upstream per `curl`, le scritture con
+`Origin`, `?json`, `?zip`, il rifiuto del `MOVE` su una cartella esistente, i token, i link pubblici e
+l'assenza della pagina con `--webui=false`. Stampa `smoke OK` ed esce con `0`; richiede `curl` e `python3`.
+
+Gli script si controllano con `bash -n webui/scripts/*.sh` e `shellcheck webui/scripts/*.sh`.
+
+## Build
+
+```bash
+webui/scripts/build.sh              # scrive ./rclone
+OUT=/usr/local/bin/rclone webui/scripts/build.sh
+```
+
+Compila con `go build -ldflags "-s -X github.com/rclone/rclone/fs.Version=<git describe>-webui"`, come il
+`Makefile` upstream ma con il suffisso `-webui`: `rclone version` mostra per esempio
+`rclone v1.75.0-556-g88317de3f-webui`, così si riconosce il binario del fork. `go build` semplice funziona
+ugualmente, solo con la versione di sviluppo.

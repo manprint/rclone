@@ -1,0 +1,6 @@
+repo: superdufs, fork of https://github.com/sigoden/dufs
+commit: 347d2026cf7eb00f90c8fe681181836dac790eec
+sha256 index.html 416e3ea49f02c38d6d7431fdeefc9d03f9b5166e4237d93ef38d40297487810f
+sha256 index.js 81742a3fbf9c3c399361c4b91b6c396cb8e20d1e7e0558168755c385ef6bd653
+sha256 index.css 1c71a0c8201245f7a7cbd5b0513f73de0895deef7f928704174ebb34146c708d
+sha256 favicon.ico 092a155f9ba0dad3b38591bbc1b7185c74c7bec19892c895c01dddee6cf9fca7

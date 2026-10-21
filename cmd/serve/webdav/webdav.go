@@ -239,6 +239,7 @@ type WebDAV struct {
 	webdavhandler *webdav.Handler
 	ctx           context.Context // for global config
 	etagHashType  hash.Type
+	webui         *webuiGlue // fork:webui
 }
 
 func webDAVCompressMiddleware() func(http.Handler) http.Handler {
@@ -293,6 +294,7 @@ func newWebDAV(ctx context.Context, f fs.Fs, opt *Options, vfsOpt *vfscommon.Opt
 		libhttp.WithConfig(w.opt.HTTP),
 		libhttp.WithAuth(w.opt.Auth),
 		libhttp.WithTemplate(w.opt.Template),
+		w.webuiPreAuth(), // fork:webui
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init server: %w", err)
@@ -317,6 +319,7 @@ func newWebDAV(ctx context.Context, f fs.Fs, opt *Options, vfsOpt *vfscommon.Opt
 		middleware.SetHeader("Server", "rclone/"+fs.Version),
 	)
 
+	w.webuiUse(router) // fork:webui
 	router.Handle("/*", w)
 
 	// Webdav only methods not defined in chi

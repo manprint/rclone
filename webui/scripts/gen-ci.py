@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Generates the CI of the fork from the upstream workflows.
+
+The upstream workflows only run in rclone/rclone and publish to the
+rclone servers, and the fork can't edit them without merge conflicts.
+This writes .github/workflows/fork-*.yml instead: the same jobs and tests,
+run in the fork, publishing the same binaries and images to the fork
+(workflow artifacts, a GitHub release for the vX.Y.Z-webui.N tags,
+ghcr.io and, if configured, Docker Hub), plus the checks of the fork.
+
+Every change is anchored on upstream text and stops with an error when
+upstream changes that text, so a sync never yields a fork workflow that
+silently drifts from upstream: adapt the rule and run the script again.
+
+Usage: gen-ci.py [--check]   (--check exits 1 if the files are stale)
+"""
+
+import os
+import re
+import sys
+
+FORK = os.environ.get("FORK_REPO", "manprint/rclone")
+UPSTREAM = "rclone/rclone"
+UPSTREAM_URL = "https://github.com/rclone/rclone.git"
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
+
+# Release tags of the fork, see fork-doc/ci-e-release.md
+TAG_RE = r"^v[0-9]+\.[0-9]+\.[0-9]+-webui\.[0-9]+$"
+RETENTION_DAYS = 14
+
+# Checks the fork tag on HEAD. The Makefile takes the version from the
+# tag on HEAD, which must be the only one, and the last release from the
+# upstream tag VERSION (LAST_TAG), so vX.Y.Z-webui.N must tag the merge
+# of the upstream release vX.Y.Z.
+TAG_CHECK = f"""\
+tag=$(git tag --points-at HEAD)
+if ! [[ $tag =~ {TAG_RE} ]]; then
+  echo "HEAD needs exactly one tag vX.Y.Z-webui.N, it has: $tag" >&2
+  exit 1
+fi
+version=$(cat VERSION)
+if [ "${{tag%-webui.*}}" != "$version" ] || ! git rev-parse -q --verify "refs/tags/$version" > /dev/null; then
+  echo "$tag must tag the merge of the upstream release ${{tag%-webui.*}}, VERSION is $version" >&2
+  exit 1
+fi"""
+
+
+def fail(rule, msg):
+    sys.exit(f"gen-ci: rule {rule!r}: {msg}; upstream changed the source, adapt webui/scripts/gen-ci.py")
+
+
+def read(path):
+    with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+        return f.read()
+
+
+def replace(text, rule, old, new, count=1):
+    """Replaces old with new, which must occur exactly count times."""
+    found = text.count(old)
+    if found != count:
+        fail(rule, f"expected {count} occurrence(s) of {old!r}, found {found}")
+    return text.replace(old, new)
+
+
+def replace_step(text, rule, name, must_contain, new):
+    """Replaces the step called name, which must contain must_contain."""
+    marker = f"\n      - name: {name}\n"
+    if text.count(marker) != 1:
+        fail(rule, f"expected one step named {name!r}")
+    start = text.index(marker) + 1
+    # The step ends at the next step, the next job or the end of the file
+    m = re.compile(r"\n(?=      - name: |  [A-Za-z0-9_-]+:\n|\S)").search(text, start + len(marker) - 1)
+    end = m.start() + 1 if m else len(text)
+    step = text[start:end]
+    if must_contain not in step:
+        fail(rule, f"step {name!r} no longer contains {must_contain!r}")
+    body = step.rstrip("\n")
+    return text[:start] + new.rstrip("\n") + step[len(body):] + text[end:]
+
+
+def find(text, rule, pattern):
+    """Returns the first group of the first match of pattern."""
+    m = re.search(pattern, text)
+    if not m:
+        fail(rule, f"no match for {pattern!r}")
+    return m.group(1)
+
+
+def local_recipe(makefile, target, must_contain):
+    """Returns the commands of a Makefile target without its uploads.
+
+    The uploads are the rclone commands to the rclone servers, the
+    ifeq/endif blocks around them and the @echo lines.
+    """
+    lines = makefile.split("\n")
+    if lines.count(target + ":") != 1:
+        fail(target, "expected one Makefile target")
+    cmds, skip = [], False
+    for line in lines[lines.index(target + ":") + 1:]:
+        if line.startswith("ifeq"):
+            skip = True
+        elif line == "endif":
+            skip = False
+        elif not line.startswith("\t"):
+            break
+        elif not skip and not re.match(r"(\./)?rclone |@echo ", line[1:]):
+            cmds.append(line[1:])
+    if not any(must_contain in c for c in cmds) or any("'" in c for c in cmds):
+        fail(target, f"unexpected recipe {cmds!r}")
+    return cmds
+
+
+def indent(text, n):
+    return "\n".join(" " * n + line for line in text.split("\n"))
+
+
+def make_script(target, cmds, n):
+    """Returns shell lines running cmds as a target of a makefile that
+    includes the Makefile, so they see its variables (TAG, BUILD_FLAGS, ...)."""
+    lines = ["# shellcheck disable=SC2016 # $(...) are make variables", "{", "  echo 'include Makefile'", f"  echo 'fork_{target}:'", "  printf '\\t%s\\n' \\"]
+    lines += [f"    '{c}' \\" for c in cmds[:-1]] + [f"    '{cmds[-1]}'"]
+    lines += ["} > .fork-ci.mk", f"make -f .fork-ci.mk fork_{target}"]
+    return indent("\n".join(lines), n)
+
+
+HEADER = """\
+# GENERATED by webui/scripts/gen-ci.py from .github/workflows/{src}: don't
+# edit. webui/scripts/sync-upstream.sh regenerates it after each merge.
+"""
+
+
+def gen_build(makefile, docker):
+    src = read(".github/workflows/build.yml")
+    t = replace(src, "name", "\nname: build\n", "\nname: fork build\n")
+    checkout = find(src, "checkout", r"uses: (actions/checkout@\S+)")
+    setup_go = find(src, "setup-go", r"uses: (actions/setup-go@\S+)")
+    go = find(src, "go version", r"name: \"lint\"[\s\S]*?go-version: '([^']+)'")
+    upload = find(docker, "upload-artifact", r"uses: (actions/upload-artifact@\S+)")
+    download = find(docker, "download-artifact", r"uses: (actions/download-artifact@\S+)")
+    deploy = "matrix.deploy && github.head_ref == ''"
+    t = replace_step(t, "deploy", "Deploy built binaries", "make ci_beta", f"""\
+      - name: Fetch upstream tags
+        # The Makefile looks for the last upstream release tag (LAST_TAG)
+        run: |
+          git fetch --tags --force {UPSTREAM_URL}
+        if: {deploy}
+
+      - name: Check the release tag
+        run: |
+{indent(TAG_CHECK, 10)}
+        if: {deploy} && startsWith(github.ref, 'refs/tags/')
+
+      - name: Build release binaries
+        # make ci_beta without the uploads to the rclone servers
+        run: |
+          if [[ "${{{{ matrix.os }}}}" == "ubuntu-latest" ]]; then make release_dep_linux ; fi
+{make_script("ci_beta", local_recipe(makefile, "ci_beta", "cross-compile.go"), 10)}
+        if: {deploy}
+
+      - name: Upload release binaries
+        uses: {upload}
+        with:
+          name: binaries-${{{{ matrix.job_name }}}}
+          # The -release beta-latest copies are hard links of the others
+          path: |
+            build/
+            !build/**/*beta-latest*
+          if-no-files-found: error
+          retention-days: {RETENTION_DAYS}
+        if: {deploy}
+""")
+    t = replace_step(t, "android upload", "Upload artifacts", "make ci_upload", f"""\
+      - name: Upload artifacts
+        # make ci_upload without the uploads to the rclone servers
+        run: |
+{make_script("ci_upload", local_recipe(makefile, "ci_upload", "gzip"), 10)}
+        if: github.head_ref == ''
+
+      - name: Upload android binaries
+        uses: {upload}
+        with:
+          name: android
+          path: build/
+          if-no-files-found: error
+          retention-days: {RETENTION_DAYS}
+        if: github.head_ref == ''
+""")
+    t = replace(t, "repository", f"github.repository == '{UPSTREAM}'", f"github.repository == '{FORK}'", 3)
+    guard = find(t, "job guard", r"\n  build:\n    if: (.*)\n")
+    t = t.rstrip("\n") + f"""
+
+  webui:
+    if: {guard}
+    timeout-minutes: 30
+    name: "webui"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: {checkout}
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: {setup_go}
+        with:
+          go-version: '{go}'
+          check-latest: true
+
+      - name: Generated workflows are up to date
+        run: python3 webui/scripts/gen-ci.py --check
+
+      - name: Footprint
+        # Against upstream master, or against the upstream point release
+        # (tagged on a stable branch) a stable branch of the fork is based on
+        run: |
+          git fetch --no-tags {UPSTREAM_URL} master:refs/remotes/upstream/master
+          git fetch --tags --force {UPSTREAM_URL}
+          base=upstream/master
+          version=$(cat VERSION)
+          if git rev-parse -q --verify "refs/tags/$version" > /dev/null &&
+            git merge-base --is-ancestor "$version" HEAD &&
+            ! git merge-base --is-ancestor "$version" "$(git merge-base HEAD upstream/master)"; then
+            base=$version
+          fi
+          UPSTREAM_REF=$base webui/scripts/check-footprint.sh
+
+      - name: Scripts
+        run: |
+          bash -n webui/scripts/*.sh
+          shellcheck webui/scripts/*.sh
+
+      - name: Tests with the web UI off
+        run: RCLONE_WEBUI=false RCLONE_CONFIG=/notfound go test -count=1 ./cmd/serve/webdav/
+
+      - name: Smoke test
+        run: webui/scripts/smoke.sh
+
+  release:
+    # The release make upload_github does upstream, for the fork tags
+    if: github.repository == '{FORK}' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-webui.')
+    needs: [build, lint, android, webui]
+    timeout-minutes: 60
+    name: "release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: {checkout}
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: {setup_go}
+        with:
+          go-version: '{go}'
+          check-latest: true
+
+      - name: Fetch upstream tags
+        run: |
+          git fetch --tags --force {UPSTREAM_URL}
+
+      - name: Check the release tag
+        run: |
+{indent(TAG_CHECK, 10)}
+          if [ "$(make version)" != "$tag" ]; then
+            echo "make version is $(make version), not $tag" >&2
+            exit 1
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Download release binaries
+        uses: {download}
+        with:
+          path: build
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Source tarballs
+        run: |
+          make tarball
+          make vendorball
+
+      - name: Checksums
+        # make sign_upload when a signing key is configured
+        env:
+          GPG_PRIVATE_KEY: ${{{{ secrets.GPG_PRIVATE_KEY }}}}
+          GPG_PASSPHRASE: ${{{{ secrets.GPG_PASSPHRASE }}}}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            mkdir -p ~/.gnupg
+            chmod 700 ~/.gnupg
+            printf '%s' "$GPG_PASSPHRASE" > ~/.gnupg/passphrase
+            printf 'batch\\npinentry-mode loopback\\npassphrase-file %s\\n' ~/.gnupg/passphrase > ~/.gnupg/gpg.conf
+            gpg --import <<< "$GPG_PRIVATE_KEY"
+            make sign_upload
+            rm ~/.gnupg/passphrase
+          else
+            cd build
+            md5sum rclone-v* > MD5SUMS
+            sha1sum rclone-v* > SHA1SUMS
+            sha256sum rclone-v* > SHA256SUMS
+          fi
+
+      - name: GitHub release
+        # bin/upload-github for the fork
+        env:
+          GH_TOKEN: ${{{{ github.token }}}}
+        run: |
+          repo=$GITHUB_REPOSITORY
+          if ! gh release view "$TAG" --repo "$repo" > /dev/null 2>&1; then
+            notes=$(mktemp)
+            echo "This is the $TAG release of the rclone fork with the web UI of serve webdav, see https://github.com/$repo/blob/$TAG/fork-doc/README.md." > "$notes"
+            gh release create "$TAG" --repo "$repo" --title "rclone $TAG" --notes-file "$notes" --draft=true
+          fi
+          for build in build/*; do
+            case $build in
+              *current*) continue ;;
+              *testbuilds*) continue ;;
+            esac
+            echo "Uploading $build"
+            gh release upload "$TAG" --clobber --repo "$repo" "$build"
+          done
+          gh release edit "$TAG" --repo "$repo" --draft=false
+          gh release view "$TAG" --repo "$repo"
+"""
+    return HEADER.format(src="build.yml") + t
+
+
+def gen_docker(docker):
+    t = replace(docker, "name", "\nname: Build & Push Docker Images\n", "\nname: fork Build & Push Docker Images\n")
+    t = replace(t, "permissions", "\npermissions:\n  contents: read\n  packages: write\n",
+                "\npermissions:\n  contents: read\n  packages: write\n  actions: write\n")
+    t = replace(t, "repository", f"github.repository == '{UPSTREAM}'", f"github.repository == '{FORK}'")
+    t = replace(t, "image url", "org.opencontainers.image.url=https://github.com/rclone/rclone/pkgs/container/rclone",
+                f"org.opencontainers.image.url=https://github.com/{FORK}/pkgs/container/rclone", 2)
+    # metadata-action makes no major/minor/latest tags for a semver
+    # pre-release such as 1.76.0-webui.1, so add them for the fork tags
+    beta = "            type=raw,value=beta,enable={{is_default_branch}}\n"
+    t = replace(t, "fork tags", beta, beta + """\
+            type=match,pattern=^v(\\d+\\.\\d+)\\.\\d+-webui\\.\\d+$,group=1
+            type=match,pattern=^v(\\d+)\\.\\d+\\.\\d+-webui\\.\\d+$,group=1
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-webui.') }}
+""", 2)
+    # Docker Hub only when the DOCKERHUB_USERNAME variable is set
+    t = replace(t, "merge job", "    name: Merge & Push Final Docker Image\n    runs-on: ubuntu-24.04\n", """\
+    name: Merge & Push Final Docker Image
+    runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+      DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/rclone
+""")
+    t = replace(t, "docker hub image", "          images: |\n            ${{ env.REPO_NAME }}\n",
+                "          images: |\n            name=${{ env.DOCKERHUB_IMAGE }},enable=${{ env.DOCKERHUB_USERNAME != '' }}\n")
+    t = replace(t, "docker hub login", "      - name: Login to Docker Hub\n        uses:",
+                "      - name: Login to Docker Hub\n        if: env.DOCKERHUB_USERNAME != ''\n        uses:")
+    t = replace(t, "docker hub user", "username: ${{ secrets.DOCKERHUB_USERNAME }}", "username: ${{ vars.DOCKERHUB_USERNAME }}")
+    inspect = "          docker buildx imagetools inspect --raw ${{ env.REPO_NAME }}:${{ steps.meta.outputs.version }}\n"
+    t = replace(t, "docker hub inspect", inspect, """\
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            docker buildx imagetools inspect --raw ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.version }}
+          fi
+""")
+    t = t.rstrip("\n") + """
+
+      - name: Build the Docker plugin
+        # Upstream builds the plugin when the release is published, but a
+        # release made with GITHUB_TOKEN starts no workflow: start it here
+        # once the images it is based on are pushed
+        if: env.DOCKERHUB_USERNAME != '' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-webui.')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run fork-docker-plugin.yml --repo ${{ github.repository }} --ref ${{ github.ref_name }}
+"""
+    return HEADER.format(src="build_publish_docker_image.yml") + t
+
+
+def gen_plugin():
+    src = read(".github/workflows/build_publish_docker_plugin.yml")
+    t = replace(src, "name", "\nname: Release Build for Docker Plugin\n", "\nname: fork Release Build for Docker Plugin\n")
+    t = replace(t, "trigger", "\non:\n  release:\n    types: [published]\n  workflow_dispatch:\n",
+                "\non:\n  # started by fork-docker-image.yml for the fork tags\n  workflow_dispatch:\n")
+    t = replace(t, "repository", f"github.repository == '{UPSTREAM}'", f"github.repository == '{FORK}'")
+    t = replace(t, "plugin user", "PLUGIN_USER=rclone\n", "PLUGIN_USER=${{ vars.DOCKERHUB_USERNAME }}\n")
+    t = replace(t, "docker hub user", "${{ secrets.DOCKER_HUB_USER }}", "${{ vars.DOCKERHUB_USERNAME }}")
+    t = replace(t, "docker hub password", "${{ secrets.DOCKER_HUB_PASSWORD }}", "${{ secrets.DOCKERHUB_TOKEN }}")
+    return HEADER.format(src="build_publish_docker_plugin.yml") + t
+
+
+def main():
+    check = sys.argv[1:] == ["--check"]
+    if sys.argv[1:] not in ([], ["--check"]):
+        sys.exit(__doc__.strip().splitlines()[-1])
+    makefile = read("Makefile")
+    docker = read(".github/workflows/build_publish_docker_image.yml")
+    outputs = {
+        "fork-build.yml": gen_build(makefile, docker),
+        "fork-docker-image.yml": gen_docker(docker),
+        "fork-docker-plugin.yml": gen_plugin(),
+    }
+    stale = []
+    for name, content in outputs.items():
+        path = os.path.join(WORKFLOWS, name)
+        try:
+            with open(path, encoding="utf-8") as f:
+                current = f.read()
+        except FileNotFoundError:
+            current = None
+        if current == content:
+            continue
+        stale.append(name)
+        if not check:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+    if check and stale:
+        sys.exit(f"gen-ci: stale {', '.join(stale)}: run webui/scripts/gen-ci.py and commit")
+    for name in stale:
+        print(f"gen-ci: wrote .github/workflows/{name}")
+
+
+if __name__ == "__main__":
+    main()

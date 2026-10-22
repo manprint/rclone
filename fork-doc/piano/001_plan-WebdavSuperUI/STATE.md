@@ -89,20 +89,20 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: task T-A006 — docker compose per `serve webdav` (richiesta utente: cartella `docker-serve-webdav` nella radice con compose, env, template di `rclone.conf` e README; poi "default ottimizzati" per elenchi e streaming, verifica dei flag del frontend di superdufs, "metti tutto in .env"; poi "committa e pusha sul main del fork").
+- Active scope: task T-A007 — upload senza cancellazione (richiesta utente: "si, implementala" sulla proposta di `--webui-allow-delete=false`, emersa dal confronto con superdufs di T-A006).
 - Scope result: COMPLETE
 - Type: task
-- ID / attempt: T-A006 / 1
-- Status: CLOSED (unit:T-A006:1)
-- Intent: usare l'immagine del fork con `serve webdav` tramite Docker Compose, con ogni valore in `.env`, restando additivi rispetto a upstream.
+- ID / attempt: T-A007 / 1
+- Status: CLOSED (unit:T-A007:1)
+- Intent: separare upload e cancellazione come `--allow-upload`/`--allow-delete` di superdufs, con il divieto applicato dal server a tutti i client e il default che non cambia nulla.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 verifica che upstream non abbia `docker-serve-webdav/` (`upstream/master` dopo fetch, `v1.75.2`, storia); S2 compose, `.env.example`, `rclone.conf.example`, `.gitignore`; S3 footprint (`check-footprint.sh`, `fork-doc/README.md`) e `Dockerfile.dockerignore`; S4 prove e2e in scratch con `ghcr.io/manprint/rclone:latest`; S5 README con confronto delle opzioni di superdufs; S6 `storia.md` §10.
-- Done: cartella pubblicata su `main`, prove in §7.
-- Current step: none (S1–S6 fatti)
-- Next action: nessuna nello scope
+- Mini-plan: S1 semantica di superdufs (`server.rs`: `DELETE`, `MOVE`, `PUT` su file non vuoto, `PATCH` che sovrascrive, `COPY` su destinazione esistente; `index.js`: move/edit/delete legati a `allow_delete`); S2 opzione `webui_allow_delete`, `refuseDelete` in `Handler` prima di ogni altro controllo, controllo di esistenza su VFS e backend, `allow_delete` nei dati, `?edit` in sola lettura per i file non vuoti, avviso nel glue quando l'interfaccia è spenta; S3 `TestWebUIAllowDeleteOff` e mutazioni; S4 gate; S5 documentazione (`uso.md`, `sviluppo.md`, `fork-doc/README.md`, `docker-serve-webdav/`, `storia.md` §11).
+- Done: flag implementato, test e gate verdi (§7), documentazione aggiornata.
+- Current step: none (S1–S5 fatti)
+- Next action: commit e push solo su richiesta dell'utente
 - Next eligible plan unit: none
-- Unit base: 4ee18893d; branch: main; owned changes: `docker-serve-webdav/`, `webui/scripts/check-footprint.sh`, `webui/docker/Dockerfile.dockerignore`, `fork-doc/README.md`, `fork-doc/storia.md`, STATE
-- Repo state: `main` pushato con la chiusura; pulito salvo `.serena/`
+- Unit base: 1d66ac74b; branch: main; owned changes: `webui/options.go`, `webui/write.go`, `webui/ui.go`, `webui/listing.go`, `webui/edit.go`, `cmd/serve/webdav/webdav_webui.go`, `cmd/serve/webdav/webdav_webui_test.go`, `fork-doc/uso.md`, `fork-doc/sviluppo.md`, `fork-doc/README.md`, `fork-doc/storia.md`, `docker-serve-webdav/README.md`, `docker-serve-webdav/.env.example`, STATE
+- Repo state: modifiche non committate; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -254,6 +254,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 | task | T-A005 / 1 | 1 | Opus (agent-1) | Ramo `v1.75-webui` (`4bee566e1`: modifiche del fork su v1.75.2, CI rigenerata dai workflow di v1.75.2; `2fceae105`: correzione B-A003), tag `v1.75.2-webui.1` (senza release, B-A003) e `v1.75.2-webui.2` (release). Su `main`: `fork-doc/README.md` (dove sono release e immagini), `fork-doc/ci-e-release.md` (prima release, tag `.1` senza release), `fork-doc/storia.md` §9 | prove locali sul ramo (footprint rispetto a `v1.75.2`, build, vet, test, `RCLONE_WEBUI=false`, `smoke.sh`); run 39642115603/39642115742 (`.1`) e 39662653217/39662653164 (`.2`) in §7; release: 51 asset = upstream v1.75.2, checksum, binario, immagini; link checker 45/0 | unit:T-A005:1 |
 | task | T-A005 / 2 | 1 | Opus (agent-1) | Tag `v1.75.2-webui.1` cancellato (`git push origin :refs/tags/…`, `git tag -d`); immagine `1.75.2-webui.1` cancellata dall'utente dalla pagina del pacchetto; `fork-doc/ci-e-release.md` e `fork-doc/storia.md` §9 aggiornati; esempio della procedura di point release su `v1.76.1` (`4950adaa5`, attempt 1) | `git ls-remote --tags origin`: solo `v1.75.2-webui.2`; `docker buildx imagetools inspect`: `1.75.2-webui.1` e `sha-4bee566` assenti, `1.75.2-webui.2` e `latest` invariati (`sha256:5160a772…`); link checker 45/0 | unit:T-A005:2 |
 | task | T-A006 / 1 | 1 | Opus (agent-1) | `docker-serve-webdav/` (`docker-compose.yml` senza default propri: `${VAR:?}` + `env_file`; `.env.example` con compose, percorsi interni, autenticazione, elenchi `DIR_CACHE_TIME=1h`/`POLL_INTERVAL=1m`/`VFS_REFRESH`/`VFS_FAST_FINGERPRINT`, streaming `VFS_CACHE_MODE=full`/chunk 32M→1G/`READ_AHEAD=256M`/`HANDLE_CACHING=30s`, timeout 12h, `--webui-*`, log `INFO`; `rclone.conf.example`; `.gitignore`; README con confronto superdufs); `docker-serve-webdav/` nel footprint (`check-footprint.sh`, `fork-doc/README.md`) e in `webui/docker/Dockerfile.dockerignore`; `fork-doc/storia.md` §10 | §7 (T-A006) | unit:T-A006:1 |
+| task | T-A007 / 1 | 1 | Opus (agent-1) | `webui/options.go`: `webui_allow_delete` (default `true`); `webui/write.go`: `statRemote` (VFS, poi `Fs().NewObject`), `refuseDelete` (403 a `DELETE`, `MOVE`, `PUT` su file non vuoto, `COPY` su destinazione esistente senza `Overwrite: F`), `forbid`; `webui/ui.go`: `refuseDelete` per primo in `Handler`; `listing.go`/`edit.go`: `allow_delete` = `!ReadOnly && AllowDelete`, `?edit` di un file non vuoto servito come `View` solo con il flag spento (non con il solo `--read-only`); glue: avviso `--webui-allow-delete=false is ignored` quando l'interfaccia è spenta; `TestWebUIAllowDeleteOff` (8 sottotest), flag in `TestWebUIFlagsRegistered`, `Kind` `Edit` con il solo `--read-only` in `TestWebUIEditPage`; documentazione | §7 (T-A007) | unit:T-A007:1 |
 
 ## 5. Files and ownership
 
@@ -265,12 +266,13 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — T-A006 chiusa (unit:T-A006:1).
+none — T-A007 chiusa (unit:T-A007:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| upload senza cancellazione (T-A007) | `go test -run 'TestWebUIAllowDeleteOff\|TestWebUIFlagsRegistered\|TestWebUIEditPage' ./cmd/serve/webdav/`; mutazioni; `go test ./webui/ ./cmd/serve/webdav/ ./lib/http/...`; `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`; `go test -race ./webui/ ./cmd/serve/webdav/`; `golangci-lint run ./webui/... ./cmd/serve/webdav/...`; `smoke.sh`; `check-footprint.sh`; binario | pass | 8 sottotest PASS (Browser, DavClient, PageData, PatchAppend, BaseURL, StaleDirCache, Auth, IgnoredWithoutUI); `TestWebUIEditPage/ReadOnlyAndUser` con `Kind` `Edit`; guardia disattivata → FAIL Browser/DavClient/StaleDirCache, senza `NewObject` → FAIL StaleDirCache; package ok, suite upstream ok con e senza UI, race ok, lint 0 issue, `smoke OK`, `footprint OK`; binario: `--webui-allow-delete` nell'help, `DELETE` 403 con file intatto, `"allow_delete":false`, avviso con `--webui=false` (flag e `RCLONE_WEBUI_ALLOW_DELETE`) | working tree T-A007 | 2026-10-22 |
 | docker compose `serve webdav` (T-A006) | `git ls-tree`/`git log` su `upstream/master` (fetch), `v1.75.2`; `check-footprint.sh` con `git add -N`; `docker compose config`/`up -d` in scratch con `ghcr.io/manprint/rclone:latest` | pass | percorso assente in upstream; footprint: regola vecchia FAIL sui 5 file, nuova OK; senza `.env` errore `required variable`; healthcheck `healthy`; `401` senza credenziali; pagina con `__webui_`; Range `206`; flag da env applicati (log DEBUG); htpasswd bcrypt; `$` tra apici singoli; link pubblici validi dopo riavvio con segreto; posizione di ripresa dopo riavvio in `/cache/webui/resume`; upload in sospeso ripresi al riavvio; `RCLONE_EXCLUDE` nasconde anche dalla ricerca; `RCLONE_ALLOW_ORIGIN=*`; variabile vuota → `CRITICAL: Invalid value`; DEBUG stampa `--pass` e `--webui-secret` (documentato) | working tree T-A006 | 2026-10-22 |
 | release `v1.75.2-webui.2` (B-A003, T-A005) | push di `2fceae105` e del tag; `gh release view/download`; `sha256sum -c`; binario linux-amd64 avviato; `docker buildx imagetools inspect` | pass | `fork build` run 39662653217 (1° tentativo): verdi `build` (linux, linux_386, go1.26, mac_amd64, mac_arm64, windows, other_os), `android-all`, `webui`, `release`; `lint` FAIL atteso (`cmd/serve/rc.go:223,359` upstream). Release https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2, non draft, "Latest": 51 asset, stessi nomi della release upstream v1.75.2 (zip/deb/rpm per piattaforma, osx-amd64/arm64, windows, sorgenti, vendor, `MD5SUMS`/`SHA1SUMS`/`SHA256SUMS`, `version.txt` = `rclone v1.75.2-webui.2`); checksum ok per zip linux-amd64 e tarball; il binario stampa `rclone v1.75.2-webui.2`, 18 flag `--webui`, pagina HTML, PUT 201, PROPFIND 207; il tarball contiene `webui/` e `fork-doc/`. Immagini run 39662653164 success: `1.75.2-webui.2`, `1.75`, `1`, `latest` stesso digest `sha256:5160a772…`, 5 piattaforme, `docker run …:latest version` → `rclone v1.75.2-webui.2` | `2fceae105` | 2026-10-21 |
 | primo tag del fork `v1.75.2-webui.1` (T-A005) | push di `4bee566e1` (ramo `v1.75-webui`) e del tag; prove locali sul ramo: footprint rispetto a `v1.75.2`, build, vet, test `webui` e `serve webdav` (anche `RCLONE_WEBUI=false`), `smoke.sh` | fail → B-A003 | `fork build` run 39642115603: "Check the release tag" verde su linux, windows, other_os (primo uso reale del controllo del tag), binari negli artifact; `lint` FAIL (`errcheck` in `cmd/serve/rc.go` di v1.75.2, corretto solo su `master` upstream); `mac_amd64`/`mac_arm64` cancellati (capacità); `release` saltato. Immagini run 39642115742 success: `1.75.2-webui.1` (`rclone v1.75.2-webui.1`, 18 flag `--webui`), con `1.75`/`1`/`latest` poi passati a `.2` | `4bee566e1` | 2026-10-21 |

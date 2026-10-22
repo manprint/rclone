@@ -9,7 +9,9 @@ video che si riconnette da solo, con layout per desktop e per mobile.
 
 Tutto il resto di rclone è invariato: stessi comandi, stessi flag, stesso comportamento. I client WebDAV e
 la riga di comando (`curl`, `wget`, il backend `webdav` di rclone) ricevono le risposte upstream, e con
-`--webui=false` il server è identico a quello upstream.
+`--webui=false` il server è identico a quello upstream. Fa eccezione solo `--webui-allow-delete=false`, una
+scelta esplicita che vieta a tutti i client di cancellare e sovrascrivere (vedi
+[uso.md](uso.md#upload-senza-cancellazione)).
 
 ```bash
 rclone serve webdav --addr 0.0.0.0:8000 myremote:

@@ -89,7 +89,7 @@ func startWebUIDir(t *testing.T, dir string, mutate func(*Options), uiMutate fun
 
 // TestWebUIFlagsRegistered checks the web UI flags are on the command
 func TestWebUIFlagsRegistered(t *testing.T) {
-	for _, name := range []string{"webui", "webui-search-max-depth", "webui-secret"} {
+	for _, name := range []string{"webui", "webui-allow-delete", "webui-search-max-depth", "webui-secret"} {
 		assert.NotNil(t, Command.Flags().Lookup(name), name)
 	}
 	// The flag's DefValue follows RCLONE_WEBUI so check the declared default
@@ -819,6 +819,150 @@ func TestWebUIDavClientUnchanged(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, with[0])
 }
 
+// TestWebUIAllowDeleteOff checks --webui-allow-delete=false refuses, for
+// browsers and WebDAV clients alike, the requests which would delete or
+// replace contents and lets the others through
+func TestWebUIAllowDeleteOff(t *testing.T) {
+	noDelete := func(o *webui.Options) { o.AllowDelete = false }
+	content := func(t *testing.T, name string) string {
+		t.Helper()
+		got, err := os.ReadFile(name)
+		require.NoError(t, err)
+		return string(got)
+	}
+	for _, client := range []struct {
+		name   string
+		header func(map[string]string) map[string]string
+	}{
+		{"Browser", withOrigin},
+		{"DavClient", func(h map[string]string) map[string]string { return h }},
+	} {
+		t.Run(client.name, func(t *testing.T) {
+			dir := moveFixture(t)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "empty.txt"), nil, 0666))
+			url := startWebUIDir(t, dir, nil, noDelete, nil)
+			h := client.header
+
+			resp, body := send(t, "DELETE", url+"src.txt", "", h(nil))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Equal(t, "Forbidden\n", body)
+			resp, _ = send(t, "DELETE", url+"dst", "", h(nil))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			resp, _ = send(t, "MOVE", url+"src.txt", "", h(map[string]string{"Destination": url + "new.txt"}))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.FileExists(t, filepath.Join(dir, "src.txt"))
+			assert.FileExists(t, filepath.Join(dir, "dst", "keep.txt"))
+			assert.NoFileExists(t, filepath.Join(dir, "new.txt"))
+
+			// Overwriting a file with contents is refused
+			resp, _ = send(t, "PUT", url+"src.txt", "changed", h(nil))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Equal(t, "src", content(t, filepath.Join(dir, "src.txt")))
+
+			// A new file, and an empty one once, can be written
+			resp, _ = send(t, "PUT", url+"added.txt", "added", h(nil))
+			assert.Equal(t, http.StatusCreated, resp.StatusCode)
+			assert.Equal(t, "added", content(t, filepath.Join(dir, "added.txt")))
+			resp, _ = send(t, "PUT", url+"empty.txt", "filled", h(nil))
+			assert.Contains(t, []int{http.StatusCreated, http.StatusNoContent}, resp.StatusCode)
+			assert.Equal(t, "filled", content(t, filepath.Join(dir, "empty.txt")))
+			resp, _ = send(t, "PUT", url+"empty.txt", "again", h(nil))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Equal(t, "filled", content(t, filepath.Join(dir, "empty.txt")))
+
+			// COPY onto an existing destination is refused, to a new one it isn't
+			resp, _ = send(t, "COPY", url+"src.txt", "", h(map[string]string{"Destination": url + "added.txt"}))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.Equal(t, "added", content(t, filepath.Join(dir, "added.txt")))
+			resp, _ = send(t, "COPY", url+"src.txt", "", h(map[string]string{"Destination": url + "dst"}))
+			assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+			assert.FileExists(t, filepath.Join(dir, "dst", "keep.txt"))
+			resp, _ = send(t, "COPY", url+"src.txt", "", h(map[string]string{"Destination": url + "added.txt", "Overwrite": "F"}))
+			assert.Equal(t, http.StatusPreconditionFailed, resp.StatusCode)
+			resp, _ = send(t, "COPY", url+"src.txt", "", h(map[string]string{"Destination": url + "copy.txt"}))
+			assert.Equal(t, http.StatusCreated, resp.StatusCode)
+			assert.Equal(t, "src", content(t, filepath.Join(dir, "copy.txt")))
+
+			resp, _ = send(t, "MKCOL", url+"newdir", "", h(nil))
+			assert.Equal(t, http.StatusCreated, resp.StatusCode)
+		})
+	}
+	t.Run("PageData", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "note.txt"), []byte("ciao"), 0666))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "new.txt"), nil, 0666))
+		url := startWebUIDir(t, dir, nil, noDelete, nil)
+
+		_, body := doRequest(t, "GET", url+"?json", nil)
+		data := jsonData(t, body)
+		assert.True(t, data.AllowUpload)
+		assert.False(t, data.AllowDelete)
+
+		// The editor of a file which can't be overwritten is read only
+		_, body = doRequest(t, "GET", url+"note.txt?edit", browserHeaders)
+		edit := editData(t, body)
+		assert.Equal(t, "View", edit.Kind)
+		assert.False(t, edit.AllowDelete)
+		assert.True(t, edit.Editable)
+		_, body = doRequest(t, "GET", url+"new.txt?edit", browserHeaders)
+		assert.Equal(t, "Edit", editData(t, body).Kind)
+	})
+	t.Run("PatchAppend", func(t *testing.T) {
+		url := startWebUI(t, nil, noDelete, cacheWritesOpt(t))
+		resp, _ := send(t, "PUT", url+"a.bin", "abc", withOrigin(nil))
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+		resp, _ = send(t, "PATCH", url+"a.bin", "def", withOrigin(map[string]string{"X-Update-Range": "append"}))
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		_, body := doRequest(t, "GET", url+"a.bin", nil)
+		assert.Equal(t, "abcdef", body)
+	})
+	t.Run("BaseURL", func(t *testing.T) {
+		dir := moveFixture(t)
+		url := startWebUIDir(t, dir, func(opt *Options) { opt.HTTP.BaseURL = "/pfx" }, noDelete, nil)
+		resp, _ := send(t, "PUT", url+"src.txt", "changed", nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		resp, _ = send(t, "COPY", url+"dst/keep.txt", "", map[string]string{"Destination": url + "src.txt"})
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, "src", content(t, filepath.Join(dir, "src.txt")))
+		resp, _ = send(t, "COPY", url+"dst/keep.txt", "", map[string]string{"Destination": url + "copy.txt"})
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	})
+	t.Run("StaleDirCache", func(t *testing.T) {
+		dir := t.TempDir()
+		vfsOpt := vfscommon.Opt
+		vfsOpt.DirCacheTime = fs.Duration(time.Hour)
+		url := startWebUIDir(t, dir, nil, noDelete, &vfsOpt)
+		_, body := doRequest(t, "GET", url+"?json", nil)
+		require.Empty(t, jsonData(t, body).Paths)
+
+		// A file the cached listing doesn't have is still found on the backend
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "late.txt"), []byte("late"), 0666))
+		resp, _ := send(t, "PUT", url+"late.txt", "changed", nil)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Equal(t, "late", content(t, filepath.Join(dir, "late.txt")))
+	})
+	t.Run("Auth", func(t *testing.T) {
+		dir := moveFixture(t)
+		url := startWebUIDir(t, dir, func(opt *Options) {
+			opt.Auth.BasicUser = testUser
+			opt.Auth.BasicPass = testPass
+		}, noDelete, nil)
+		resp, _ := send(t, "DELETE", url+"src.txt", "", nil)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.FileExists(t, filepath.Join(dir, "src.txt"))
+	})
+	t.Run("IgnoredWithoutUI", func(t *testing.T) {
+		dir := moveFixture(t)
+		url := startWebUIDir(t, dir, nil, func(o *webui.Options) {
+			o.Enabled = false
+			o.AllowDelete = false
+		}, nil)
+		resp, _ := send(t, "DELETE", url+"src.txt", "", nil)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.NoFileExists(t, filepath.Join(dir, "src.txt"))
+	})
+}
+
 // TestWebUIPathTraversal checks the requests from browsers are held to the
 // server's path check
 func TestWebUIPathTraversal(t *testing.T) {
@@ -951,6 +1095,7 @@ func TestWebUIEditPage(t *testing.T) {
 			"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte(testUser+":"+testPass)),
 		})
 		data := editData(t, body)
+		assert.Equal(t, "Edit", data.Kind, "--read-only alone keeps the editor")
 		assert.False(t, data.AllowUpload)
 		assert.False(t, data.AllowDelete)
 		assert.True(t, data.Auth)

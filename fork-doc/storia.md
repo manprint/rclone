@@ -132,6 +132,17 @@ guida che confronta anche le opzioni di superdufs con quelle del fork. Prima di 
 upstream non abbia quel percorso (`master`, tag e storia), che è stato aggiunto al footprint di
 `check-footprint.sh` ed escluso dal contesto del build dell'immagine del fork.
 
+## 11. Upload senza cancellazione (T-A007)
+
+Confrontando le opzioni di superdufs con quelle del fork (T-A006) è emerso che upload e cancellazione si
+potevano spegnere solo insieme con `--read-only`. Su richiesta dell'utente `--webui-allow-delete=false`
+riproduce `--allow-upload` senza `--allow-delete`: `DELETE`, `MOVE`, `PUT` su un file non vuoto e `COPY`
+su una destinazione esistente rispondono `403`, la pagina nasconde cancellazione, spostamento e modifica.
+Il rifiuto vale per tutti i client e non solo per i browser, perché un divieto aggirabile con un client
+WebDAV non proteggerebbe nulla; con il default `true` nulla cambia. L'esistenza dei file è controllata
+anche sul backend, perché con una cache degli elenchi lunga la VFS può non conoscere un file aggiunto da
+fuori. Dettagli in [uso.md](uso.md#upload-senza-cancellazione).
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

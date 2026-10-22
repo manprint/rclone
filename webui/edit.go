@@ -117,6 +117,13 @@ func (u *UI) serveEdit(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
+	allowDelete := !VFS.Opt.ReadOnly && u.opt.AllowDelete
+	// Saving would overwrite the file, which is only allowed while it is
+	// empty, so the editor of any other file is shown read only.
+	if kind == kindEdit && !u.opt.AllowDelete && file.Size() != 0 {
+		kind = kindView
+	}
+
 	var user *string
 	if name, ok := u.lookupUser(r); ok {
 		user = &name
@@ -126,7 +133,7 @@ func (u *UI) serveEdit(w http.ResponseWriter, r *http.Request) bool {
 		Kind:                             kind,
 		URIPrefix:                        u.baseSlash(),
 		AllowUpload:                      !VFS.Opt.ReadOnly,
-		AllowDelete:                      !VFS.Opt.ReadOnly,
+		AllowDelete:                      allowDelete,
 		Auth:                             u.cfg.UsingAuth(),
 		User:                             user,
 		Editable:                         u.editable(file),

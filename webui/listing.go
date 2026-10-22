@@ -140,7 +140,7 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		Kind:                          "Index",
 		URIPrefix:                     u.baseSlash(),
 		AllowUpload:                   !VFS.Opt.ReadOnly,
-		AllowDelete:                   !VFS.Opt.ReadOnly,
+		AllowDelete:                   !VFS.Opt.ReadOnly && u.opt.AllowDelete,
 		AllowSearch:                   u.opt.Search,
 		AllowArchive:                  !u.cfg.DisableZip,
 		DirExists:                     true,

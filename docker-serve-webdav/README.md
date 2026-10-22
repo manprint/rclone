@@ -297,6 +297,7 @@ default come `3d` e `1M`, che equivalgono a `72h` e `720h`.
 | Variabile | Flag | Default | `.env.example` | Descrizione |
 |-----------|------|---------|----------------|-------------|
 | `RCLONE_WEBUI` | `--webui` | `true` | `true` | Serve l'interfaccia ai browser che aprono una cartella; `false` = server identico a upstream |
+| `RCLONE_WEBUI_ALLOW_DELETE` | `--webui-allow-delete` | `true` | (default) | `false` = upload senza cancellazione: nessun client può cancellare, spostare o sovrascrivere (vedi sotto) |
 | `RCLONE_WEBUI_SECRET` | `--webui-secret` | vuoto | (commentata) | Segreto che firma token di download e link pubblici. Vuoto = chiavi casuali, i link smettono di funzionare a ogni riavvio |
 | `RCLONE_WEBUI_TOKEN_EXPIRY` | `--webui-token-expiry` | `72h` | (default) | Durata dei token di download; `<= 0` li fa scadere subito |
 | `RCLONE_WEBUI_PUBLINK_PATHS` | `--webui-publink-paths` | vuoto | (commentata) | Percorsi, separati da virgola, per cui la pagina offre link pubblici permanenti; `/` = tutto il server |
@@ -317,6 +318,24 @@ default come `3d` e `1M`, che equivalgono a `72h` e `720h`.
 
 "(default)" indica una variabile presente commentata in `.env.example` con il valore di default;
 "(commentata)" una funzione spenta che si accende togliendo il commento.
+
+### Upload senza cancellazione
+
+Con `RCLONE_WEBUI_ALLOW_DELETE=false` gli utenti possono caricare file e creare cartelle, ma non cancellare,
+spostare, rinominare o sovrascrivere quello che c'è già: la pagina nasconde quei comandi e il server li
+rifiuta con `403` a **tutti** i client, browser e client WebDAV. Un file nuovo si può creare e un file vuoto
+riempire una volta (come "New File" della pagina); un `PUT` su un file non vuoto, `DELETE`, `MOVE` e `COPY`
+su una destinazione esistente sono rifiutati. L'esistenza del file è verificata anche sul backend, quindi
+la protezione vale anche per i file aggiunti da fuori e non ancora nella cache degli elenchi.
+
+Va bene per una cartella di consegna o un archivio in cui si deposita soltanto. Non va bene con programmi
+che salvano sovrascrivendo o con file temporanei rinominati (editor e suite d'ufficio su un disco WebDAV
+montato, `rclone sync`): ricevono `403`. Il controllo è dell'interfaccia: con `RCLONE_WEBUI=false` è
+ignorato e il log lo segnala. Dettagli in [fork-doc/uso.md](../fork-doc/uso.md#upload-senza-cancellazione).
+
+Il flag c'è dalle immagini costruite dopo la release `1.75.2-webui.2` (`main` e le release successive):
+un'immagine precedente ignora la variabile senza errori. Per controllare:
+`docker compose run --rm --no-deps rclone-webdav serve webdav --help | grep webui-allow-delete`.
 
 ### Link di download e link pubblici
 
@@ -346,6 +365,7 @@ gli utenti del server e non si scrive nulla sul remote.
 | Variabile | Effetto sulla pagina |
 |-----------|----------------------|
 | `RCLONE_READ_ONLY=true` | Nasconde upload e cancellazione (`allow_upload` e `allow_delete` falsi); le scritture sono rifiutate |
+| `RCLONE_WEBUI_ALLOW_DELETE=false` | Nasconde cancellazione, spostamento e modifica (`allow_delete` falso); `?edit` di un file non vuoto è in sola lettura |
 | `RCLONE_DISABLE_ZIP=true` | Nasconde lo scarico come zip; `?zip` risponde `403` |
 | `RCLONE_BASEURL` | Prefisso di tutti gli URL della pagina, degli asset e dei link pubblici |
 | `RCLONE_USER`/`RCLONE_PASS`/`RCLONE_HTPASSWD` | Attivano login, logout e token di download |
@@ -542,10 +562,11 @@ Le opzioni di superdufs che governano la pagina corrispondono così:
 
 | superdufs | Questo server | Note |
 |-----------|---------------|------|
-| `--allow-upload`, `--allow-delete` | `RCLONE_READ_ONLY` | **Solo insieme**: upload e cancellazione sono entrambi permessi, o entrambi spenti con `RCLONE_READ_ONLY=true`. Non si può permettere l'upload e vietare la cancellazione |
+| `--allow-upload` | `RCLONE_READ_ONLY` (inverso) | `RCLONE_READ_ONLY=true` spegne upload e cancellazione insieme |
+| `--allow-delete` | `RCLONE_WEBUI_ALLOW_DELETE` | Stesse regole di superdufs: senza, niente `DELETE` e `MOVE`, `PUT` solo su file nuovi o vuoti, `COPY` solo verso destinazioni nuove |
 | `--allow-search` | `RCLONE_WEBUI_SEARCH` | Più i limiti `RCLONE_WEBUI_SEARCH_MAX_DEPTH`, `_MAX_RESULTS`, `_TIMEOUT` |
 | `--allow-archive` | `RCLONE_DISABLE_ZIP` (inverso) | Più `RCLONE_WEBUI_MULTI_ZIP_MAX` |
-| `--allow-all` | (default) | Tutto è permesso salvo `RCLONE_READ_ONLY` e `RCLONE_DISABLE_ZIP` |
+| `--allow-all` | (default) | Tutto è permesso salvo `RCLONE_READ_ONLY`, `RCLONE_WEBUI_ALLOW_DELETE=false` e `RCLONE_DISABLE_ZIP` |
 | `--auth user:pass@/dir:rw` | `RCLONE_USER`/`RCLONE_PASS`, `RCLONE_HTPASSWD` | **Senza ruoli per percorso**: tutti gli utenti hanno gli stessi permessi su tutto il server. Per separarli: più container, o `RCLONE_AUTH_PROXY` |
 | `--publink-enabled <path>` | `RCLONE_WEBUI_PUBLINK_PATHS` | Stessa semantica: elenco di percorsi, `/` = tutto |
 | `--publink-secret` | `RCLONE_WEBUI_SECRET` | Firma anche i token di download |
@@ -584,6 +605,7 @@ corrispondenti: qui il backend è direttamente rclone, e lo streaming si regola 
 | File cambiati sull'host non compaiono | Cache degli elenchi: compaiono entro `RCLONE_DIR_CACHE_TIME`; abbassala (es. `1m`) se succede spesso |
 | Un file caricato non c'è ancora sul remote | È in `cache/` in attesa dell'upload (`RCLONE_VFS_WRITE_BACK`); se il container è stato fermato riparte al riavvio |
 | I link pubblici o di download smettono di funzionare dopo un riavvio | Manca `RCLONE_WEBUI_SECRET` |
+| `403 Forbidden` cancellando, rinominando o salvando un file esistente | `RCLONE_WEBUI_ALLOW_DELETE=false`: è il comportamento voluto; rimettilo a `true` per permetterlo |
 | La ripresa degli upload non funziona | `RCLONE_VFS_CACHE_MODE` è `off` o `minimal`: usa `writes` o `full` |
 | Video che va a scatti da un remote lontano | Aumenta `RCLONE_VFS_READ_AHEAD`, oppure prova `RCLONE_VFS_READ_CHUNK_STREAMS=16` con `RCLONE_VFS_READ_CHUNK_SIZE=4M` |
 | Una modifica a `.env` non ha effetto | `.env` si legge alla creazione del container: `docker compose up -d`, non `restart` |

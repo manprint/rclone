@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -159,6 +160,72 @@ func (u *UI) guardMove(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS) boo
 		return true
 	}
 	return false
+}
+
+// statRemote looks remote up in the VFS and, if the VFS doesn't know it, on
+// the backend, as the directory cache may predate a file added by another
+// client. found is false if remote doesn't exist.
+func statRemote(ctx context.Context, VFS *vfs.VFS, remote string) (isDir bool, size int64, found bool) {
+	if node, err := VFS.Stat(remote); err == nil {
+		return node.IsDir(), node.Size(), true
+	}
+	if o, err := VFS.Fs().NewObject(ctx, remote); err == nil {
+		return false, o.Size(), true
+	}
+	return false, 0, false
+}
+
+// refuseDelete replies 403, when --webui-allow-delete is off, to the
+// requests of any client which would delete or replace existing contents:
+// DELETE, MOVE (which deletes the source), a PUT onto a file which isn't
+// empty and a COPY onto an existing destination. It reports whether it
+// replied.
+//
+// A PUT onto an empty file is let through, as superdufs does, so that a
+// file made by the UI can be written once.
+func (u *UI) refuseDelete(w http.ResponseWriter, r *http.Request) bool {
+	if u.opt.AllowDelete {
+		return false
+	}
+	var remote string
+	switch r.Method {
+	case http.MethodDelete, "MOVE":
+		u.forbid(w, r)
+		return true
+	case http.MethodPut:
+		if u.cfg.CheckPath(r.URL.Path) != nil || strings.HasSuffix(r.URL.Path, "/") {
+			return false
+		}
+		remote = remoteFromPath(r.URL.Path)
+	case "COPY":
+		// Without overwriting the server refuses an existing destination
+		if strings.EqualFold(r.Header.Get("Overwrite"), "F") {
+			return false
+		}
+		dst, ok := u.destRemote(r)
+		if !ok {
+			return false
+		}
+		remote = dst
+	default:
+		return false
+	}
+	VFS, err := u.cfg.GetVFS(r.Context())
+	if err != nil {
+		return false
+	}
+	isDir, size, found := statRemote(r.Context(), VFS, remote)
+	if !found || (r.Method == http.MethodPut && (isDir || size == 0)) {
+		return false
+	}
+	u.forbid(w, r)
+	return true
+}
+
+// forbid replies 403 to a request refused by --webui-allow-delete
+func (u *UI) forbid(w http.ResponseWriter, r *http.Request) {
+	fs.Debugf(nil, "webui: %s %q refused by --webui-allow-delete=false", r.Method, r.URL.Path)
+	httpError(w, http.StatusForbidden, http.StatusText(http.StatusForbidden))
 }
 
 // serveWrite handles the requests which change the contents of the

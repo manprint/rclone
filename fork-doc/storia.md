@@ -122,6 +122,16 @@ checksum, `version.txt`), e le immagini `1.75.2-webui.2`, `1.75`, `1` e `latest`
 `ghcr.io/manprint/rclone`. I checksum corrispondono e il binario Linux scaricato stampa
 `rclone v1.75.2-webui.2` e serve l'interfaccia. `lint` resta rosso sui tag di v1.75, per il codice upstream.
 
+## 10. Docker compose per `serve webdav` (T-A006)
+
+Su richiesta dell'utente la cartella [`docker-serve-webdav/`](../docker-serve-webdav/README.md), nella
+radice del repository, avvia l'immagine `ghcr.io/manprint/rclone` in modalità `serve webdav` con Docker
+Compose: `docker-compose.yml` senza valori propri, `.env.example` con tutte le variabili (flag upstream e
+`--webui-*`, default ottimizzati per elenchi veloci e streaming video), un template di `rclone.conf` e una
+guida che confronta anche le opzioni di superdufs con quelle del fork. Prima di crearla si è verificato che
+upstream non abbia quel percorso (`master`, tag e storia), che è stato aggiunto al footprint di
+`check-footprint.sh` ed escluso dal contesto del build dell'immagine del fork.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

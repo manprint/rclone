@@ -7,3 +7,4 @@ rclone
 rclone.exe
 *.test
 docs/public
+docker-serve-webdav

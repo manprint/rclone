@@ -89,20 +89,20 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: task T-A005 — prima release del fork (richiesta utente: "si, vai" sulla proposta di `v1.75.2-webui.1`; poi "Nuovo tag .2" dopo B-A003; poi "si fallo" sulla cancellazione del tag `.1` e della sua immagine).
+- Active scope: task T-A006 — docker compose per `serve webdav` (richiesta utente: cartella `docker-serve-webdav` nella radice con compose, env, template di `rclone.conf` e README; poi "default ottimizzati" per elenchi e streaming, verifica dei flag del frontend di superdufs, "metti tutto in .env"; poi "committa e pusha sul main del fork").
 - Scope result: COMPLETE
 - Type: task
-- ID / attempt: T-A005 / 2
-- Status: CLOSED (unit:T-A005:2)
-- Intent: pubblicare la prima release del fork, `vX.Y.Z-webui.N` sulla point release upstream v1.75.2, con binari, release GitHub e immagini come upstream, e registrarne l'esito.
+- ID / attempt: T-A006 / 1
+- Status: CLOSED (unit:T-A006:1)
+- Intent: usare l'immagine del fork con `serve webdav` tramite Docker Compose, con ogni valore in `.env`, restando additivi rispetto a upstream.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 ramo `v1.75-webui` da `v1.75.2` + `git diff --binary <merge-base> main | git apply --3way --index` + `gen-ci.py`; prove locali (footprint rispetto a `v1.75.2`, build, vet, test, `RCLONE_WEBUI=false`, `smoke.sh`); S2 commit `4bee566e1`, tag `v1.75.2-webui.1`, push; S3 run del tag (→ B-A003, release saltata); S4 dopo B-A003 tag `v1.75.2-webui.2` su `2fceae105`; S5 verifica di release, asset, checksum, binario e immagini; S6 documentazione (`fork-doc/README.md`, stato in `ci-e-release.md`, `storia.md` §9); attempt 2: S7 cancellazione del tag `v1.75.2-webui.1` (locale e origin) e dell'immagine `1.75.2-webui.1` (a mano dall'utente, il token di `gh` non ha `delete:packages`), documentazione aggiornata.
-- Done: release GitHub `v1.75.2-webui.2` con gli asset di upstream e immagini `1.75.2-webui.2`/`1.75`/`1`/`latest` verificate; esito documentato.
-- Current step: none (S1–S7 fatti)
+- Mini-plan: S1 verifica che upstream non abbia `docker-serve-webdav/` (`upstream/master` dopo fetch, `v1.75.2`, storia); S2 compose, `.env.example`, `rclone.conf.example`, `.gitignore`; S3 footprint (`check-footprint.sh`, `fork-doc/README.md`) e `Dockerfile.dockerignore`; S4 prove e2e in scratch con `ghcr.io/manprint/rclone:latest`; S5 README con confronto delle opzioni di superdufs; S6 `storia.md` §10.
+- Done: cartella pubblicata su `main`, prove in §7.
+- Current step: none (S1–S6 fatti)
 - Next action: nessuna nello scope
 - Next eligible plan unit: none
-- Unit base: 0af5a8bb3 (chiusura B-A003); branch: main (+ ramo `v1.75-webui`, tag `v1.75.2-webui.2`); owned changes: `fork-doc/README.md`, `fork-doc/ci-e-release.md`, `fork-doc/storia.md`, STATE
-- Repo state: `main` pushato con la chiusura; ramo e tag pubblicati; pulito salvo `.serena/`
+- Unit base: 4ee18893d; branch: main; owned changes: `docker-serve-webdav/`, `webui/scripts/check-footprint.sh`, `webui/docker/Dockerfile.dockerignore`, `fork-doc/README.md`, `fork-doc/storia.md`, STATE
+- Repo state: `main` pushato con la chiusura; pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
 
@@ -253,6 +253,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 | bug | B-A003 / 1 | 1 | Opus (agent-1) | `webui/scripts/gen-ci.py`: `release.needs` = `[build, android, webui]` (senza `lint`, come upstream che pubblica dai job di build) + commento; `fork-build.yml` rigenerato su `main` e, dai workflow di v1.75.2, sul ramo `v1.75-webui`; `fork-doc/ci-e-release.md` (dipendenze del job `release`, `lint` rosso su un tag, come portare una correzione della CI su un ramo di release). Fix `4a0c15b87` su `main` (PEV-Result wip) e `2fceae105` su `v1.75-webui`; il tag `v1.75.2-webui.1` (`4bee566e1`) resta senza release, nuova release `v1.75.2-webui.2` (scelta dell'utente, nessun tag spostato) | `gen-ci.py --check` ok su entrambi i rami; actionlint ok; footprint ok (`main` rispetto a `upstream/master`, ramo rispetto a `v1.75.2`); link checker 43/0; run 39662653217 sul tag `v1.75.2-webui.2`: `release` success con `lint` rosso per lo stesso `cmd/serve/rc.go` upstream | unit:B-A003:1 |
 | task | T-A005 / 1 | 1 | Opus (agent-1) | Ramo `v1.75-webui` (`4bee566e1`: modifiche del fork su v1.75.2, CI rigenerata dai workflow di v1.75.2; `2fceae105`: correzione B-A003), tag `v1.75.2-webui.1` (senza release, B-A003) e `v1.75.2-webui.2` (release). Su `main`: `fork-doc/README.md` (dove sono release e immagini), `fork-doc/ci-e-release.md` (prima release, tag `.1` senza release), `fork-doc/storia.md` §9 | prove locali sul ramo (footprint rispetto a `v1.75.2`, build, vet, test, `RCLONE_WEBUI=false`, `smoke.sh`); run 39642115603/39642115742 (`.1`) e 39662653217/39662653164 (`.2`) in §7; release: 51 asset = upstream v1.75.2, checksum, binario, immagini; link checker 45/0 | unit:T-A005:1 |
 | task | T-A005 / 2 | 1 | Opus (agent-1) | Tag `v1.75.2-webui.1` cancellato (`git push origin :refs/tags/…`, `git tag -d`); immagine `1.75.2-webui.1` cancellata dall'utente dalla pagina del pacchetto; `fork-doc/ci-e-release.md` e `fork-doc/storia.md` §9 aggiornati; esempio della procedura di point release su `v1.76.1` (`4950adaa5`, attempt 1) | `git ls-remote --tags origin`: solo `v1.75.2-webui.2`; `docker buildx imagetools inspect`: `1.75.2-webui.1` e `sha-4bee566` assenti, `1.75.2-webui.2` e `latest` invariati (`sha256:5160a772…`); link checker 45/0 | unit:T-A005:2 |
+| task | T-A006 / 1 | 1 | Opus (agent-1) | `docker-serve-webdav/` (`docker-compose.yml` senza default propri: `${VAR:?}` + `env_file`; `.env.example` con compose, percorsi interni, autenticazione, elenchi `DIR_CACHE_TIME=1h`/`POLL_INTERVAL=1m`/`VFS_REFRESH`/`VFS_FAST_FINGERPRINT`, streaming `VFS_CACHE_MODE=full`/chunk 32M→1G/`READ_AHEAD=256M`/`HANDLE_CACHING=30s`, timeout 12h, `--webui-*`, log `INFO`; `rclone.conf.example`; `.gitignore`; README con confronto superdufs); `docker-serve-webdav/` nel footprint (`check-footprint.sh`, `fork-doc/README.md`) e in `webui/docker/Dockerfile.dockerignore`; `fork-doc/storia.md` §10 | §7 (T-A006) | unit:T-A006:1 |
 
 ## 5. Files and ownership
 
@@ -264,12 +265,13 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — T-A005 chiusa (unit:T-A005:2).
+none — T-A006 chiusa (unit:T-A006:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| docker compose `serve webdav` (T-A006) | `git ls-tree`/`git log` su `upstream/master` (fetch), `v1.75.2`; `check-footprint.sh` con `git add -N`; `docker compose config`/`up -d` in scratch con `ghcr.io/manprint/rclone:latest` | pass | percorso assente in upstream; footprint: regola vecchia FAIL sui 5 file, nuova OK; senza `.env` errore `required variable`; healthcheck `healthy`; `401` senza credenziali; pagina con `__webui_`; Range `206`; flag da env applicati (log DEBUG); htpasswd bcrypt; `$` tra apici singoli; link pubblici validi dopo riavvio con segreto; posizione di ripresa dopo riavvio in `/cache/webui/resume`; upload in sospeso ripresi al riavvio; `RCLONE_EXCLUDE` nasconde anche dalla ricerca; `RCLONE_ALLOW_ORIGIN=*`; variabile vuota → `CRITICAL: Invalid value`; DEBUG stampa `--pass` e `--webui-secret` (documentato) | working tree T-A006 | 2026-10-22 |
 | release `v1.75.2-webui.2` (B-A003, T-A005) | push di `2fceae105` e del tag; `gh release view/download`; `sha256sum -c`; binario linux-amd64 avviato; `docker buildx imagetools inspect` | pass | `fork build` run 39662653217 (1° tentativo): verdi `build` (linux, linux_386, go1.26, mac_amd64, mac_arm64, windows, other_os), `android-all`, `webui`, `release`; `lint` FAIL atteso (`cmd/serve/rc.go:223,359` upstream). Release https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2, non draft, "Latest": 51 asset, stessi nomi della release upstream v1.75.2 (zip/deb/rpm per piattaforma, osx-amd64/arm64, windows, sorgenti, vendor, `MD5SUMS`/`SHA1SUMS`/`SHA256SUMS`, `version.txt` = `rclone v1.75.2-webui.2`); checksum ok per zip linux-amd64 e tarball; il binario stampa `rclone v1.75.2-webui.2`, 18 flag `--webui`, pagina HTML, PUT 201, PROPFIND 207; il tarball contiene `webui/` e `fork-doc/`. Immagini run 39662653164 success: `1.75.2-webui.2`, `1.75`, `1`, `latest` stesso digest `sha256:5160a772…`, 5 piattaforme, `docker run …:latest version` → `rclone v1.75.2-webui.2` | `2fceae105` | 2026-10-21 |
 | primo tag del fork `v1.75.2-webui.1` (T-A005) | push di `4bee566e1` (ramo `v1.75-webui`) e del tag; prove locali sul ramo: footprint rispetto a `v1.75.2`, build, vet, test `webui` e `serve webdav` (anche `RCLONE_WEBUI=false`), `smoke.sh` | fail → B-A003 | `fork build` run 39642115603: "Check the release tag" verde su linux, windows, other_os (primo uso reale del controllo del tag), binari negli artifact; `lint` FAIL (`errcheck` in `cmd/serve/rc.go` di v1.75.2, corretto solo su `master` upstream); `mac_amd64`/`mac_arm64` cancellati (capacità); `release` saltato. Immagini run 39642115742 success: `1.75.2-webui.1` (`rclone v1.75.2-webui.1`, 18 flag `--webui`), con `1.75`/`1`/`latest` poi passati a `.2` | `4bee566e1` | 2026-10-21 |
 | run CI di verifica (B-A002) | push di `8f56e3629`; `gh run rerun --failed` ×2 per i job macOS non assegnati | pass (salvo `mac_arm64` non eseguito) | `fork build` run 39627387299: verdi `windows` (`ok …/webui`, nessun FAIL), `linux`, `linux_386`, `go1.26`, `mac_amd64` (al 2° tentativo: quicktest, race, binari darwin/amd64), `other_os`, `lint`, `android-all`, `webui`; `mac_arm64` mai assegnato a un runner in 3 tentativi ("The job was not acquired by Runner of type hosted", capacità GitHub macOS arm64; era verde sul run di `b4f5c514b` e non esegue test). Immagini run 39627387428 success, 5 piattaforme | `8f56e3629` | 2026-10-21 |

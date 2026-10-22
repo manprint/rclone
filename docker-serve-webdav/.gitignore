@@ -1,0 +1,8 @@
+# Configurazione e dati locali: contengono credenziali o file degli utenti
+.env
+config/
+cache/
+data/
+auth/
+certs/
+ssh/

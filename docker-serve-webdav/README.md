@@ -333,8 +333,8 @@ che salvano sovrascrivendo o con file temporanei rinominati (editor e suite d'uf
 montato, `rclone sync`): ricevono `403`. Il controllo è dell'interfaccia: con `RCLONE_WEBUI=false` è
 ignorato e il log lo segnala. Dettagli in [fork-doc/uso.md](../fork-doc/uso.md#upload-senza-cancellazione).
 
-Il flag c'è dalle immagini costruite dopo la release `1.75.2-webui.2` (`main` e le release successive):
-un'immagine precedente ignora la variabile senza errori. Per controllare:
+Il flag c'è dalla release `1.75.2-webui.3` (e in `main`): un'immagine precedente ignora la variabile
+senza errori. Per controllare:
 `docker compose run --rm --no-deps rclone-webdav serve webdav --help | grep webui-allow-delete`.
 
 ### Link di download e link pubblici

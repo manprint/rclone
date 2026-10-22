@@ -143,6 +143,17 @@ WebDAV non proteggerebbe nulla; con il default `true` nulla cambia. L'esistenza 
 anche sul backend, perché con una cache degli elenchi lunga la VFS può non conoscere un file aggiunto da
 fuori. Dettagli in [uso.md](uso.md#upload-senza-cancellazione).
 
+## 12. Release `v1.75.2-webui.3`
+
+Su richiesta dell'utente `docker-serve-webdav/` (T-A006) e `--webui-allow-delete` (T-A007) sono stati
+portati sul ramo `v1.75-webui` prendendo i percorsi del fork da `main` (`6854a0c36`); `webdav.go` e la CI
+generata non cambiavano. Footprint rispetto a v1.75.2, build, test con e senza interfaccia e lint dei
+percorsi del fork sono passati sul ramo prima del tag (`0ac086ea8`). Il run del tag ha pubblicato al primo
+tentativo [la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.3), con 51 file come
+la precedente, e le immagini `1.75.2-webui.3`, `1.75`, `1` e `latest`: `latest` stampa
+`rclone v1.75.2-webui.3` e ha `--webui-allow-delete`. `lint` è rosso solo per i due `errcheck` upstream di
+`cmd/serve/rc.go` (§9).
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

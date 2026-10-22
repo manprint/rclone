@@ -65,6 +65,12 @@ non è configurato, quindi le immagini vanno solo su ghcr.io e il workflow del p
 chiave GPG: i checksum delle release sono in chiaro. Il pacchetto `ghcr.io/manprint/rclone` è pubblico (si
 scarica senza login) dalla prima pubblicazione.
 
+Prima release: [`v1.75.2-webui.2`](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2), dal
+ramo `v1.75-webui` (point release upstream v1.75.2). Il tag `v1.75.2-webui.1` non ha prodotto una
+release, perché il job `release` dipendeva ancora da `lint`, rosso sul codice upstream di v1.75.2 (vedi
+[storia.md](storia.md#9-prima-release-t-a005-b-a003)); il tag e l'immagine `1.75.2-webui.1` sono stati
+cancellati.
+
 ## Release del fork
 
 Si parte da una release upstream, unendo il suo tag (così `VERSION` corrisponde alla release):
@@ -112,12 +118,12 @@ differenza tra l'ultimo commit di `master` unito a `main` e `main`:
 
 ```bash
 git fetch upstream --tags
-git switch -c v1.75-webui v1.75.2
+git switch -c v1.76-webui v1.76.1
 git diff --binary "$(git merge-base main upstream/master)" main | git apply --3way --index
 python3 webui/scripts/gen-ci.py && git add .github/workflows
-git commit -m "webui: add the web UI of serve webdav to v1.75.2"
-git tag -a v1.75.2-webui.1 -m "rclone v1.75.2-webui.1"
-git push origin v1.75-webui v1.75.2-webui.1
+git commit -m "webui: add the web UI of serve webdav to v1.76.1"
+git tag -a v1.76.1-webui.1 -m "rclone v1.76.1-webui.1"
+git push origin v1.76-webui v1.76.1-webui.1
 ```
 
 `gen-ci.py` rigenera i workflow da quelli della release upstream. Su un ramo così il job `webui` controlla
@@ -131,8 +137,8 @@ rigenerando i workflow sul ramo; i workflow di `main` non si copiano, perché ve
 `master`:
 
 ```bash
-git switch v1.75-webui
+git switch v1.76-webui
 git checkout main -- webui/scripts/gen-ci.py
 python3 webui/scripts/gen-ci.py && git add .github/workflows
-UPSTREAM_REF=v1.75.2 webui/scripts/check-footprint.sh
+UPSTREAM_REF=v1.76.1 webui/scripts/check-footprint.sh
 ```

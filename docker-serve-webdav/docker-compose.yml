@@ -1,0 +1,49 @@
+# rclone serve webdav con l'interfaccia web del fork (ghcr.io/manprint/rclone).
+#
+#   cp .env.example .env                       # poi modifica .env
+#   cp rclone.conf.example config/rclone.conf  # solo se servi un remote
+#   docker compose up -d
+#
+# Tutti i valori stanno in .env: questo file non ha default propri.
+# Le variabili sono descritte in .env.example e in README.md; il nome del
+# progetto è COMPOSE_PROJECT_NAME di .env.
+
+services:
+  rclone-webdav:
+    image: ${WEBDAV_IMAGE:?imposta WEBDAV_IMAGE in .env}
+    container_name: ${WEBDAV_CONTAINER_NAME:?imposta WEBDAV_CONTAINER_NAME in .env}
+    restart: unless-stopped
+    # Utente e gruppo con cui gira rclone: devono poter scrivere in
+    # config/ e cache/, e leggere (o scrivere) i dati serviti.
+    user: "${PUID:?imposta PUID in .env}:${PGID:?imposta PGID in .env}"
+    # Il remote (o la cartella del container) servito.
+    command: ["serve", "webdav", "${WEBDAV_REMOTE:?imposta WEBDAV_REMOTE in .env}"]
+    ports:
+      - "${WEBDAV_BIND:?imposta WEBDAV_BIND in .env}:${WEBDAV_PORT:?imposta WEBDAV_PORT in .env}:8080"
+    # Ogni RCLONE_<NOME> di .env diventa il flag --<nome> di rclone
+    # (RCLONE_WEBUI_SEARCH equivale a --webui-search).
+    env_file:
+      - .env
+    volumes:
+      # rclone.conf, scrivibile perché rclone aggiorna i token OAuth
+      - ${WEBDAV_CONFIG_DIR:?imposta WEBDAV_CONFIG_DIR in .env}:/config/rclone
+      # Cache della VFS e posizioni di riproduzione: contiene anche gli
+      # upload non ancora scritti sul remote, deve restare persistente
+      - ${WEBDAV_CACHE_DIR:?imposta WEBDAV_CACHE_DIR in .env}:/cache
+      # Cartella locale servita quando WEBDAV_REMOTE=/data
+      - ${WEBDAV_DATA_DIR:?imposta WEBDAV_DATA_DIR in .env}:/data
+      # File htpasswd (RCLONE_HTPASSWD=/auth/htpasswd), facoltativo
+      # - ./auth:/auth:ro
+      # Certificato e chiave TLS (RCLONE_CERT, RCLONE_KEY), facoltativi
+      # - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

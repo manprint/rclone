@@ -6,7 +6,8 @@ Questo package aggiunge a `rclone serve webdav` l'interfaccia web di
 superdufs (un fork di [dufs](https://github.com/sigoden/dufs)): un browser che apre il server vede una pagina
 con navigazione delle cartelle, upload, download, ricerca, modifica dei file di testo, player multimediale
 e gestione dei file invece del semplice elenco HTML. I client WebDAV e la riga di comando non sono
-interessati: il protocollo WebDAV resta quello upstream.
+interessati: il protocollo WebDAV resta quello upstream. L'unica eccezione è `--webui-allow-delete=false`,
+che vieta a tutti i client di cancellare e sovrascrivere (sezione "Upload senza cancellazione").
 
 L'interfaccia è attiva per default. Resta spenta (comportamento identico a upstream) con `--webui=false`,
 con `--template` oppure con `--disable-dir-list`.
@@ -46,6 +47,7 @@ Ogni flag ha la corrispondente variabile d'ambiente `RCLONE_<NOME>` (es. `RCLONE
 | Flag | Default | Descrizione |
 |------|---------|-------------|
 | `--webui` | `true` | Serve l'interfaccia web ai browser che aprono una cartella |
+| `--webui-allow-delete` | `true` | Permette a tutti i client di cancellare, spostare e sovrascrivere; `false` lascia solo la creazione di file e cartelle nuovi |
 | `--webui-search` | `true` | Abilita la ricerca ricorsiva |
 | `--webui-search-max-depth` | `8` | Profondità massima della ricerca |
 | `--webui-search-max-results` | `1000` | Numero massimo di risultati della ricerca |
@@ -78,6 +80,7 @@ Note:
   `?view`, che li usa per riconnettersi quando il flusso si interrompe.
 - `--webui-token-expiry`: un valore minore o uguale a zero fa scadere subito i token di download.
 - `--webui-resume-retention`: `0` conserva le posizioni di riproduzione per sempre.
+- `--webui-allow-delete`: vedi "Upload senza cancellazione"; vale solo con l'interfaccia attiva.
 
 ### Flag di rclone che influenzano l'interfaccia
 
@@ -166,6 +169,32 @@ spenta).
 
 Le regole di sicurezza che riguardano i browser (sandbox dei file attivi, preflight CORS) sono nella
 sezione "Sicurezza"; i limiti di questi comportamenti sono in "Limiti noti".
+
+## Upload senza cancellazione
+
+`--webui-allow-delete=false` permette di caricare file e creare cartelle ma non di cancellare o sostituire
+quello che c'è già, come `--allow-upload` senza `--allow-delete` in superdufs. A differenza delle altre
+regole dell'interfaccia vale per **tutti i client**, browser e client WebDAV, dopo l'autenticazione:
+
+| Richiesta | Con `--webui-allow-delete=false` |
+|-----------|----------------------------------|
+| `DELETE` | `403 Forbidden` |
+| `MOVE` (anche una rinomina) | `403`: lo spostamento cancella l'origine |
+| `PUT` su un file esistente non vuoto | `403`, il file resta com'era |
+| `PUT` su un file nuovo o vuoto | Permesso: un file vuoto si può riempire una volta |
+| `COPY` su una destinazione esistente | `403`; con `Overwrite: F` resta il `412` dell'upstream |
+| `COPY` verso una destinazione nuova, `MKCOL`, `PATCH` append | Permessi |
+
+L'esistenza di un file è controllata nella VFS e, se la VFS non lo conosce, anche sul backend, così un file
+aggiunto da fuori dopo l'ultimo elenco in cache non è sovrascritto.
+
+La pagina riceve `allow_delete` falso e nasconde cancellazione, spostamento e modifica. `?edit` su un file
+non vuoto apre la pagina in sola lettura (`kind` `View`, senza salvataggio); su un file vuoto, come quello
+creato con "New File", resta l'editor e il primo salvataggio riesce.
+
+Il controllo sta nell'interfaccia: con `--webui=false`, `--template` o `--disable-dir-list` il flag è
+ignorato e il server lo scrive nel log (`--webui-allow-delete=false is ignored as the web interface is off`).
+Con `--read-only` tutte le scritture sono rifiutate comunque.
 
 ## Ripresa riproduzione
 
@@ -316,7 +345,8 @@ percorso, che è lo stesso usato dalle richieste autenticate.
 Le regole speciali per le scritture (cartelle padre create da `PUT`, `PATCH` append, rifiuto di `MOVE` su una
 cartella esistente) valgono solo per le richieste con intestazione `Origin`, che i browser aggiungono ai
 metodi diversi da `GET` e `HEAD`. I client WebDAV (rclone, davfs2, cadaver, Windows) non la inviano e
-ricevono le risposte upstream.
+ricevono le risposte upstream, salvo i rifiuti di `--webui-allow-delete=false`, che valgono per tutti
+(sezione "Upload senza cancellazione").
 
 `MOVE` dal browser senza intestazione `Overwrite` verso una cartella esistente risponde `412 Destination
 folder exists`: la pagina non chiede conferma per le cartelle e l'upstream, in assenza di `Overwrite`,
@@ -367,6 +397,14 @@ con `401` e registrato come "Unauthorized request", oppure autenticato): il toke
 - **Sovrascrittura interrotta.** Un upload che sovrascrive un file esistente e si interrompe fa perdere il
   contenuto originale (il file è troncato all'apertura): è lo stesso comportamento dell'upstream e di
   superdufs.
+- **Upload senza cancellazione.** Con `--webui-allow-delete=false` i programmi che salvano sovrascrivendo
+  un file, o scrivendo un file temporaneo e poi rinominandolo (editor e suite d'ufficio su un disco WebDAV
+  montato, Esplora risorse che rinomina, `rclone sync` e `rclone copy` che aggiornano o cancellano),
+  ricevono `403`: si possono solo aggiungere file nuovi. Ricaricare dalla pagina un file con un nome già
+  presente fallisce allo stesso modo, e un upload interrotto tenuto dalla cache (`writes` o `full`) si può
+  solo completare con la ripresa della pagina (`PATCH` append), non cancellare né ricaricare da capo. Per
+  la destinazione di `COPY` il controllo sul backend riguarda i
+  file: una cartella creata da fuori e non ancora nella cache degli elenchi non è riconosciuta.
 - **Lock e data di modifica.** `PUT` e `PATCH` dal browser non controllano i lock WebDAV e ignorano
   `X-OC-Mtime`, che il browser non usa.
 - **Conteggio delle cartelle.** Con `--webui-dir-count` ogni apertura della pagina costa un elenco per

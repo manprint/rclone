@@ -1,0 +1,82 @@
+# Template di rclone.conf per docker-serve-webdav.
+#
+# Copialo in config/rclone.conf (WEBDAV_CONFIG_DIR), tieni solo i remote che
+# ti servono e scegli quale servire con WEBDAV_REMOTE nel file .env, per
+# esempio WEBDAV_REMOTE=s3:bucket/cartella.
+#
+# Le password vanno scritte offuscate, non in chiaro:
+#
+#   docker run --rm ghcr.io/manprint/rclone:latest obscure 'la-password'
+#
+# In alternativa un remote si crea in modo interattivo con:
+#
+#   docker compose run --rm rclone-webdav config
+#
+# I valori tra <> sono da sostituire. Ogni opzione si può anche passare come
+# variabile d'ambiente RCLONE_CONFIG_<REMOTE>_<OPZIONE> nel file .env (per
+# esempio RCLONE_CONFIG_S3_SECRET_ACCESS_KEY), senza scriverla qui.
+
+# Cartella locale del container (/data = WEBDAV_DATA_DIR): equivale a
+# WEBDAV_REMOTE=/data, ma con un nome da usare anche in crypt o union.
+[locale]
+type = alias
+remote = /data
+
+# S3 o compatibile (AWS, MinIO, Wasabi, Cloudflare R2, ...).
+[s3]
+type = s3
+provider = <AWS|Minio|Wasabi|Cloudflare|Other>
+access_key_id = <access key>
+secret_access_key = <secret key>
+region = <eu-south-1>
+# Solo per provider diversi da AWS:
+# endpoint = https://<minio.example.com>
+# acl = private
+
+# Server SFTP. key_file è un percorso del container: monta la chiave in
+# sola lettura, per esempio ./ssh:/ssh:ro.
+[sftp]
+type = sftp
+host = <sftp.example.com>
+port = 22
+user = <utente>
+# Password offuscata con "rclone obscure", oppure una chiave:
+pass = <password offuscata>
+# key_file = /ssh/id_ed25519
+# shell_type = unix
+
+# Altro server WebDAV (Nextcloud, ownCloud, un altro rclone serve webdav).
+[webdav]
+type = webdav
+url = https://<cloud.example.com>/remote.php/dav/files/<utente>
+vendor = <nextcloud|owncloud|rclone|other>
+user = <utente>
+pass = <password offuscata>
+
+# Google Drive: il token OAuth si ottiene su una macchina con browser con
+# "rclone authorize drive" e si incolla qui; rclone lo rinnova e riscrive
+# questo file, per questo config/ è montato in scrittura.
+[gdrive]
+type = drive
+scope = drive
+token = <{"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"..."}>
+# root_folder_id = <id della cartella>
+# team_drive = <id dello shared drive>
+
+# Cifratura lato client sopra un altro remote: si serve "cifrato:" e i
+# client vedono i file in chiaro, sul remote restano cifrati.
+[cifrato]
+type = crypt
+remote = s3:<bucket>/cifrato
+password = <password offuscata>
+password2 = <salt offuscato>
+filename_encryption = standard
+directory_name_encryption = true
+
+# Più remote visti come una sola cartella.
+[unione]
+type = union
+upstreams = locale: s3:<bucket>
+action_policy = epall
+create_policy = epmfs
+search_policy = ff

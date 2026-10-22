@@ -101,6 +101,48 @@ Tutta la documentazione, l'analisi e il piano sono stati riuniti in questa carte
 nessun conflitto possibile ai merge. Il piano stava prima in `docs/plans/`, dentro la cartella `docs/` di
 upstream.
 
+## 9. Prima release (T-A005, B-A003)
+
+La prima release del fork parte dalla point release upstream v1.75.2, sul ramo `v1.75-webui` creato con la
+procedura di [ci-e-release.md](ci-e-release.md#release-del-fork): le modifiche del fork applicate sul tag
+upstream e la CI rigenerata dai workflow di v1.75.2.
+
+Il primo tag, `v1.75.2-webui.1`, ha confermato i controlli del tag e la build dei binari su GitHub e ha
+pubblicato le immagini, ma non la release: `lint`, che usa l'ultima versione di golangci-lint, ha segnalato
+due `errcheck` in `cmd/serve/rc.go`, codice upstream di v1.75.2 corretto solo su `master`, e il job
+`release` dipendeva da `lint` (B-A003). Upstream pubblica i binari dai job di build senza aspettare il lint,
+quindi ora `release` aspetta solo build, Android e `webui` (`4a0c15b87` su `main`, `2fceae105` sul ramo).
+Invece di spostare il tag già pubblicato si è fatta una nuova release, `v1.75.2-webui.2`; dopo la release
+il tag `v1.75.2-webui.1` e la sua immagine sono stati cancellati.
+
+Il run di `v1.75.2-webui.2` ha pubblicato al primo tentativo
+[la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.2): 51 file, gli stessi della
+release upstream v1.75.2 con la versione del fork (zip, deb e rpm per piattaforma, sorgenti, vendor,
+checksum, `version.txt`), e le immagini `1.75.2-webui.2`, `1.75`, `1` e `latest` su
+`ghcr.io/manprint/rclone`. I checksum corrispondono e il binario Linux scaricato stampa
+`rclone v1.75.2-webui.2` e serve l'interfaccia. `lint` resta rosso sui tag di v1.75, per il codice upstream.
+
+## 10. Docker compose per `serve webdav` (T-A006)
+
+Su richiesta dell'utente la cartella [`docker-serve-webdav/`](../docker-serve-webdav/README.md), nella
+radice del repository, avvia l'immagine `ghcr.io/manprint/rclone` in modalità `serve webdav` con Docker
+Compose: `docker-compose.yml` senza valori propri, `.env.example` con tutte le variabili (flag upstream e
+`--webui-*`, default ottimizzati per elenchi veloci e streaming video), un template di `rclone.conf` e una
+guida che confronta anche le opzioni di superdufs con quelle del fork. Prima di crearla si è verificato che
+upstream non abbia quel percorso (`master`, tag e storia), che è stato aggiunto al footprint di
+`check-footprint.sh` ed escluso dal contesto del build dell'immagine del fork.
+
+## 11. Upload senza cancellazione (T-A007)
+
+Confrontando le opzioni di superdufs con quelle del fork (T-A006) è emerso che upload e cancellazione si
+potevano spegnere solo insieme con `--read-only`. Su richiesta dell'utente `--webui-allow-delete=false`
+riproduce `--allow-upload` senza `--allow-delete`: `DELETE`, `MOVE`, `PUT` su un file non vuoto e `COPY`
+su una destinazione esistente rispondono `403`, la pagina nasconde cancellazione, spostamento e modifica.
+Il rifiuto vale per tutti i client e non solo per i browser, perché un divieto aggirabile con un client
+WebDAV non proteggerebbe nulla; con il default `true` nulla cambia. L'esistenza dei file è controllata
+anche sul backend, perché con una cache degli elenchi lunga la VFS può non conoscere un file aggiunto da
+fuori. Dettagli in [uso.md](uso.md#upload-senza-cancellazione).
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

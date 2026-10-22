@@ -16,7 +16,7 @@ d'uso è in [uso.md](uso.md), la build in [build.md](build.md), la CI in [ci-e-r
 | `webui/data.go` | Strutture dei dati incorporati nella pagina (`IndexData`, `EditData`) e ordinamento naturale |
 | `webui/edit.go` | `?edit` e `?view`, controllo dei file modificabili, sandbox dei file attivi |
 | `webui/files.go` | Scarico di un file |
-| `webui/write.go` | Scritture dei browser: `CHECKAUTH`, `LOGOUT`, `PUT`, `PATCH` append, guardia del `MOVE` |
+| `webui/write.go` | Scritture dei browser: `CHECKAUTH`, `LOGOUT`, `PUT`, `PATCH` append, guardia del `MOVE`; rifiuti di `--webui-allow-delete=false` per tutti i client |
 | `webui/zip.go` | Scarico come zip di una cartella o di una selezione |
 | `webui/search.go` | Ricerca ricorsiva (`?q`) e statistiche di spazio (`?disk-stats`) |
 | `webui/resume.go` | Posizioni di riproduzione (`?resume-get`, `?resume-save`, `?resume-clear`) |
@@ -57,7 +57,9 @@ richiesta -> [PreAuth] -> StripPrefix -> CORS -> intestazioni -> AUTH -> VFS -> 
 dell'autenticazione: serve soltanto asset, link pubblici validi e token di download validi; tutto il resto
 passa avanti. Per questo riapplica da sé CORS e intestazioni di risposta. `Handler` è registrato come
 ultimo middleware prima delle rotte e serve, già autenticato, le pagine, le scritture dei browser, la
-ricerca e il resto; ciò che non è interfaccia passa al server WebDAV upstream. Questo ordine dipende da
+ricerca e il resto; ciò che non è interfaccia passa al server WebDAV upstream. Con
+`--webui-allow-delete=false` è anche il punto in cui `DELETE`, `MOVE` e le sovrascritture di qualunque
+client sono rifiutate, prima di ogni altro controllo (`refuseDelete`, `TestWebUIAllowDeleteOff`). Questo ordine dipende da
 come `libhttp.NewServer` registra le opzioni e i middleware: lo proteggono `TestPreAuthBoundaries` e
 `TestPublinkBoundaries`, da guardare dopo ogni sincronizzazione con upstream.
 

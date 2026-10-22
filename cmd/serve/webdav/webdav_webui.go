@@ -23,6 +23,7 @@ type webuiGlue = webui.UI
 func (w *WebDAV) webuiPreAuth() libhttp.Option {
 	return func(s *libhttp.Server) {
 		if !webui.Opt.Enabled || w.opt.Template.Path != "" || w.opt.DisableDirList {
+			warnAllowDeleteIgnored()
 			return
 		}
 		u, err := webui.New(webui.Config{
@@ -39,10 +40,19 @@ func (w *WebDAV) webuiPreAuth() libhttp.Option {
 		}, webui.Opt)
 		if err != nil {
 			fs.Errorf(nil, "webui disabled: %v", err)
+			warnAllowDeleteIgnored()
 			return
 		}
 		w.webui = u
 		s.Router().Use(u.PreAuth)
+	}
+}
+
+// warnAllowDeleteIgnored tells the user that deletions stay allowed when
+// --webui-allow-delete=false is set but the web UI, which enforces it, is off
+func warnAllowDeleteIgnored() {
+	if !webui.Opt.AllowDelete {
+		fs.Logf(nil, "webui: --webui-allow-delete=false is ignored as the web interface is off: deleting is allowed")
 	}
 }
 

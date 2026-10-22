@@ -9,7 +9,9 @@ video che si riconnette da solo, con layout per desktop e per mobile.
 
 Tutto il resto di rclone è invariato: stessi comandi, stessi flag, stesso comportamento. I client WebDAV e
 la riga di comando (`curl`, `wget`, il backend `webdav` di rclone) ricevono le risposte upstream, e con
-`--webui=false` il server è identico a quello upstream.
+`--webui=false` il server è identico a quello upstream. Fa eccezione solo `--webui-allow-delete=false`, una
+scelta esplicita che vieta a tutti i client di cancellare e sovrascrivere (vedi
+[uso.md](uso.md#upload-senza-cancellazione)).
 
 ```bash
 rclone serve webdav --addr 0.0.0.0:8000 myremote:
@@ -20,12 +22,17 @@ locali di `build.sh` e `just` il suffisso `-webui`. Le build della CI per i push
 immagini `main` e `beta` su `ghcr.io/manprint/rclone`) hanno la versione beta di upstream seguita dal ramo,
 per esempio `rclone v1.76.0-beta.10633.b4f5c514b.main`.
 
+Le release, con i binari per tutte le piattaforme di upstream, sono su
+https://github.com/manprint/rclone/releases; l'immagine dell'ultima release è
+`ghcr.io/manprint/rclone:latest`, quelle delle singole release `ghcr.io/manprint/rclone:X.Y.Z-webui.N`.
+
 ## Documenti
 
 | Documento | Contenuto |
 |-----------|-----------|
 | [uso.md](uso.md) | Guida d'uso: avvio, flag, interfaccia, client WebDAV, ripresa della riproduzione, ricerca, link di download e pubblici, sicurezza, limiti noti |
 | [build.md](build.md) | Build locale del binario e dell'immagine Docker (`build.sh`, `just`) |
+| [../docker-serve-webdav/](../docker-serve-webdav/README.md) | Docker compose pronto per `serve webdav`: `.env` con tutte le variabili, template di `rclone.conf`, guida |
 | [ci-e-release.md](ci-e-release.md) | CI del fork, binari, immagini, attivazione e procedura di release |
 | [sviluppo.md](sviluppo.md) | Architettura, sincronizzazione con upstream e con superdufs, test |
 | [storia.md](storia.md) | Cronologia del lavoro: richiesta, analisi, piano, fasi, audit, correzioni, pubblicazione |
@@ -44,6 +51,7 @@ tutto ciò che è del fork sta in file e cartelle che upstream non ha.
 | `cmd/serve/webdav/webdav_webui*.go` | Il collegamento tra `serve webdav` e il package, e i suoi test |
 | `.github/workflows/fork-*.yml` | La CI del fork, generata dai workflow upstream da `webui/scripts/gen-ci.py` |
 | `fork-doc/` | Questa documentazione, l'analisi e il piano |
+| `docker-serve-webdav/` | Docker compose, `.env` e template di `rclone.conf` per usare l'immagine con `serve webdav` |
 | `cmd/serve/webdav/webdav.go` | L'unico file upstream toccato: tre righe aggiunte, marcate `// fork:webui`, nessuna riga cambiata |
 
 Restano come upstream, tra gli altri, `go.mod` e `go.sum` (nessuna dipendenza nuova), `Makefile`,

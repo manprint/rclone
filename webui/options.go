@@ -13,6 +13,10 @@ var OptionsInfo = fs.Options{{
 	Default: true,
 	Help:    "Serve the web interface to browsers listing a directory",
 }, {
+	Name:    "webui_allow_delete",
+	Default: true,
+	Help:    "Allow any client to delete, move or overwrite files while the web interface is on",
+}, {
 	Name:    "webui_search",
 	Default: true,
 	Help:    "Enable recursive search in the web interface",
@@ -86,6 +90,7 @@ var OptionsInfo = fs.Options{{
 // Options configures the web UI
 type Options struct {
 	Enabled                 bool            `config:"webui"`
+	AllowDelete             bool            `config:"webui_allow_delete"`
 	Search                  bool            `config:"webui_search"`
 	SearchMaxDepth          int             `config:"webui_search_max_depth"`
 	SearchMaxResults        int             `config:"webui_search_max_results"`

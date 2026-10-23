@@ -334,7 +334,11 @@ func (u *UI) resumeSave(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, re
 	}
 	// Only existing media files may have a position so that requests can't
 	// fill the store
-	node, err := VFS.Stat(remote)
+	node, err := u.lookups.stat(r.Context(), VFS, remote)
+	if err != nil && !errors.Is(err, vfs.ENOENT) {
+		vfsError(w, remote, err)
+		return
+	}
 	if err != nil || node.IsDir() || !isMedia(remote) {
 		httpError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 		return

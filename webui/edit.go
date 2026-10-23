@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -108,9 +109,14 @@ func (u *UI) serveEdit(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	node, err := VFS.Stat(remote)
-	if err != nil {
+	node, err := u.lookups.stat(r.Context(), VFS, remote)
+	if errors.Is(err, vfs.ENOENT) {
 		return false
+	}
+	if err != nil {
+		// Passing on would make the next handler repeat the lookup
+		vfsError(w, remote, err)
+		return true
 	}
 	file, ok := node.(*vfs.File)
 	if !ok {

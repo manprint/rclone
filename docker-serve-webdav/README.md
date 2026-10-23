@@ -24,6 +24,7 @@ Il comportamento completo dell'interfaccia (endpoint, link, sicurezza, limiti) �
 - [Autenticazione e rete](#autenticazione-e-rete)
 - [Elenchi veloci delle cartelle](#elenchi-veloci-delle-cartelle)
 - [Cache e streaming video](#cache-e-streaming-video)
+- [Remote lenti o irraggiungibili](#remote-lenti-o-irraggiungibili)
 - [Flag nuovi dell'interfaccia web](#flag-nuovi-dellinterfaccia-web)
 - [Flag di rclone che cambiano l'interfaccia](#flag-di-rclone-che-cambiano-linterfaccia)
 - [Log](#log)
@@ -288,6 +289,72 @@ prima, l'upload resta in `cache/` e riparte al riavvio successivo (nel log:
 `vfs cache: queuing for upload`). Per questo `cache/` deve essere persistente e non va cancellata mentre
 il log riporta upload in sospeso (`to upload N` con `N` maggiore di zero).
 
+## Remote lenti o irraggiungibili
+
+Il server non ha retry propri: ogni richiesta al remote (elenco di una cartella, apertura di un file,
+upload) è ripetuta fino a `RCLONE_LOW_LEVEL_RETRIES` volte, e ogni tentativo aspetta fino a
+`RCLONE_CONTIMEOUT` per collegarsi e fino a `RCLONE_TIMEOUT` di silenzio del remote. Un remote che rifiuta
+la connessione fallisce in pochi secondi; uno che non risponde tiene ferma l'operazione per tutti i
+tentativi. Mentre si legge l'elenco di una cartella, chi la apre, dall'interfaccia o da un client WebDAV,
+aspetta quella lettura e ne riceve il risultato; la cartella che la contiene e le altre restano
+utilizzabili.
+
+| Variabile | Flag | Default rclone | `.env.example` | Effetto |
+|-----------|------|----------------|----------------|---------|
+| `RCLONE_CONTIMEOUT` | `--contimeout` | `60s` | `15s` | Tempo massimo per aprire la connessione e per l'handshake TLS |
+| `RCLONE_TIMEOUT` | `--timeout` | `5m` | `1m` | Silenzio massimo del remote: prima dell'inizio della risposta e tra un blocco di dati e il successivo |
+| `RCLONE_LOW_LEVEL_RETRIES` | `--low-level-retries` | `10` | `5` | Tentativi per ogni richiesta al remote |
+| `RCLONE_DISABLE_HTTP2` | `--disable-http2` | `false` | (commentata) | HTTP/1.1 verso i remote HTTP: con HTTP/2 i trasferimenti paralleli condividono una connessione, che su link con perdite o lontani li rallenta tutti; da provare se letture parallele e upload sono lenti |
+| `RCLONE_DIR_CACHE_TIME` | `--dir-cache-time` | `5m` | `1h` | Vedi [Elenchi veloci delle cartelle](#elenchi-veloci-delle-cartelle) |
+| `RCLONE_VFS_CACHE_MODE` | `--vfs-cache-mode` | `off` | `full` | Vedi [Cache e streaming video](#cache-e-streaming-video) |
+
+Quanto può restare ferma un'operazione su un remote che non risponde, circa (tentativi × attesa, più le
+pause tra un tentativo e l'altro):
+
+| | Default rclone | `.env.example` |
+|-|----------------|----------------|
+| Il remote non accetta la connessione (host spento, firewall che scarta i pacchetti) | 10 × 60s = 10 minuti | 5 × 15s ≈ 1¼ minuti |
+| Il remote accetta la connessione ma non risponde | 10 × 5m = 50 minuti | 5 × 1m = 5 minuti |
+
+Cosa fanno gli altri valori quando il remote è giù:
+
+- **`RCLONE_DIR_CACHE_TIME=1h`.** Gli elenchi letti nell'ultima ora si aprono dalla cache senza toccare il
+  remote. Scaduto il tempo, un elenco che fallisce è un errore: rclone non serve l'ultimo elenco noto.
+  Alzarlo (per esempio `24h`) allunga la finestra in cui le cartelle già viste restano navigabili, ma le
+  modifiche fatte da fuori arrivano solo con il polling (`RCLONE_POLL_INTERVAL`, sui remote che lo
+  supportano) o alla scadenza.
+- **`RCLONE_VFS_CACHE_MODE=full`** (o `writes`). Un upload è scritto prima in `cache/`: il client riceve
+  `201` anche con il remote giù, e rclone lo carica in background riprovando senza limite, con attese che
+  raddoppiano fino a 5 minuti tra un tentativo e l'altro, anche dopo un riavvio. I file in attesa non
+  escono dalla cache neanche oltre `RCLONE_VFS_CACHE_MAX_SIZE`: con il remote giù a lungo e molti upload,
+  il disco di `WEBDAV_CACHE_DIR` si riempie. L'interfaccia non mostra gli upload in attesa: guardali nel
+  log.
+
+Quando alzare i valori di `.env.example`:
+
+- **`RCLONE_TIMEOUT` a `5m`** se il server copia o sposta file grandi lato server (`MOVE` e `COPY`
+  WebDAV verso S3, Nextcloud, ownCloud, ...), cancella cartelle grandi o carica file grandi su remote che
+  confermano l'upload solo dopo averlo salvato o ricomposto (Nextcloud e ownCloud con upload a pezzi, un
+  `PUT` WebDAV unico, alcuni S3 compatibili alla chiusura del multipart): il remote risponde solo a
+  operazione finita, oltre il minuto il tentativo scade e rclone ripete l'operazione da capo. Per un upload
+  dalla cache vuol dire ricaricare l'intero file a ogni tentativo, senza fine. Per lo
+  streaming non serve: un video in pausa più a lungo di `RCLONE_TIMEOUT` costa solo una nuova apertura del
+  file sul remote alla ripresa.
+- **`RCLONE_LOW_LEVEL_RETRIES` a `10`** con Google Drive, OneDrive, Dropbox, Box e altri remote con rate
+  limit: i tentativi, con le loro pause crescenti, assorbono i rifiuti temporanei per troppe richieste (per
+  esempio durante `RCLONE_VFS_REFRESH` all'avvio).
+- **`RCLONE_CONTIMEOUT` a `30s` o più** su linee lente, satellitari o mobili, o verso server lenti
+  nell'handshake TLS.
+
+Righe del log da tenere d'occhio (`docker compose logs -f rclone-webdav`):
+
+| Riga | Significato |
+|------|-------------|
+| `vfs cache: failed to upload try #N, will retry in D: errore` | Upload dalla cache fallito: riprova da solo dopo `D`. `N` che cresce indica che il remote è giù o rifiuta il file |
+| `vfs cache: upload succeeded try #N` | Upload arrivato sul remote |
+| `vfs cache: queuing for upload` | Upload in attesa, anche quelli ripresi dopo un riavvio |
+| `webui: ...` con `context deadline exceeded`, `i/o timeout`, `connection refused` | L'interfaccia ha risposto `503`/`504` perché il remote non risponde |
+
 ## Flag nuovi dell'interfaccia web
 
 Sono i flag aggiunti dal fork. Ognuno ha la sua variabile `RCLONE_WEBUI_*` e appare in
@@ -333,8 +400,8 @@ che salvano sovrascrivendo o con file temporanei rinominati (editor e suite d'uf
 montato, `rclone sync`): ricevono `403`. Il controllo è dell'interfaccia: con `RCLONE_WEBUI=false` è
 ignorato e il log lo segnala. Dettagli in [fork-doc/uso.md](../fork-doc/uso.md#upload-senza-cancellazione).
 
-Il flag c'è dalle immagini costruite dopo la release `1.75.2-webui.2` (`main` e le release successive):
-un'immagine precedente ignora la variabile senza errori. Per controllare:
+Il flag c'è dalla release `1.75.2-webui.3` (e in `main`): un'immagine precedente ignora la variabile
+senza errori. Per controllare:
 `docker compose run --rm --no-deps rclone-webdav serve webdav --help | grep webui-allow-delete`.
 
 ### Link di download e link pubblici
@@ -603,7 +670,11 @@ corrispondenti: qui il backend è direttamente rclone, e lo streaming si regola 
 | `401` con la password giusta | La password contiene `$`: racchiudila tra apici singoli in `.env`, poi `docker compose up -d` |
 | Il browser mostra l'elenco semplice di rclone invece dell'interfaccia | `RCLONE_WEBUI=false`, `RCLONE_TEMPLATE` o `RCLONE_DISABLE_DIR_LIST` impostate; oppure la richiesta non viene da un browser (`curl`, `wget` ricevono sempre l'elenco upstream) |
 | File cambiati sull'host non compaiono | Cache degli elenchi: compaiono entro `RCLONE_DIR_CACHE_TIME`; abbassala (es. `1m`) se succede spesso |
-| Un file caricato non c'è ancora sul remote | È in `cache/` in attesa dell'upload (`RCLONE_VFS_WRITE_BACK`); se il container è stato fermato riparte al riavvio |
+| Un file caricato non c'è ancora sul remote | È in `cache/` in attesa dell'upload (`RCLONE_VFS_WRITE_BACK`); se il container è stato fermato riparte al riavvio. Nel log `failed to upload try #N`: il remote è giù o rifiuta il file, rclone riprova da solo |
+| Le pagine restano in caricamento, poi `503` o `504` | Il remote non risponde: vedi [Remote lenti o irraggiungibili](#remote-lenti-o-irraggiungibili) per i tempi e per abbassarli |
+| Copie o spostamenti di file grandi ripetuti o falliti, nel log `timeout awaiting response headers` | Il remote risponde solo a copia finita, oltre `RCLONE_TIMEOUT`: portalo a `5m` |
+| Nel log `failed to upload try #N ... timeout awaiting response headers` con `N` che cresce sullo stesso file grande | Il remote conferma l'upload solo dopo averlo salvato, oltre `RCLONE_TIMEOUT`: rclone lo ricarica da capo a ogni tentativo. Porta `RCLONE_TIMEOUT` a `5m` o più |
+| Errori `rateLimitExceeded`, `429` o `too many requests` su Drive, OneDrive, Dropbox | Pochi tentativi per assorbire il rate limit: `RCLONE_LOW_LEVEL_RETRIES=10` |
 | I link pubblici o di download smettono di funzionare dopo un riavvio | Manca `RCLONE_WEBUI_SECRET` |
 | `403 Forbidden` cancellando, rinominando o salvando un file esistente | `RCLONE_WEBUI_ALLOW_DELETE=false`: è il comportamento voluto; rimettilo a `true` per permetterlo |
 | La ripresa degli upload non funziona | `RCLONE_VFS_CACHE_MODE` è `off` o `minimal`: usa `writes` o `full` |

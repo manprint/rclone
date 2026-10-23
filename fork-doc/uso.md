@@ -140,7 +140,8 @@ radice); `GET <cartella>/?zip=multi&paths=["a","b/c"]` scarica la selezione fatt
 `selection.zip`. `paths` è un array JSON di percorsi relativi alla cartella (al massimo 8192 caratteri e
 `--webui-multi-zip-max` elementi); percorsi con `.` o `..` sono rifiutati con `400`, un percorso inesistente
 dà `404`. Con `--disable-zip` entrambi rispondono `403`. L'archivio è scritto mentre si legge: un errore a
-metà lascia un file senza elenco finale (non confondibile con uno completo) e si legge solo nel log.
+metà interrompe la connessione, così il browser segna lo scarico come fallito, e il file ricevuto resta
+senza elenco finale (non confondibile con uno completo); il motivo si legge nel log.
 
 ## Comportamento con client WebDAV
 
@@ -186,7 +187,9 @@ regole dell'interfaccia vale per **tutti i client**, browser e client WebDAV, do
 | `COPY` verso una destinazione nuova, `MKCOL`, `PATCH` append | Permessi |
 
 L'esistenza di un file è controllata nella VFS e, se la VFS non lo conosce, anche sul backend, così un file
-aggiunto da fuori dopo l'ultimo elenco in cache non è sovrascritto.
+aggiunto da fuori dopo l'ultimo elenco in cache non è sovrascritto. Se il controllo non riesce perché il
+remote dà errore o non risponde, la richiesta è rifiutata (`503`, `504` o `500`, vedi "Remote lenti o
+irraggiungibili") invece di essere lasciata passare.
 
 La pagina riceve `allow_delete` falso e nasconde cancellazione, spostamento e modifica. `?edit` su un file
 non vuoto apre la pagina in sola lettura (`kind` `View`, senza salvataggio); su un file vuoto, come quello
@@ -251,13 +254,18 @@ e a `?json`: un client da riga di comando che invia `?q` senza `?json` passa all
 | `--webui-search-timeout` | `30s` | Durata massima; vale anche la chiusura della connessione da parte del browser |
 
 La ricerca scende per livelli. Quando raggiunge un limite (profondità, risultati o tempo) o il browser chiude
-la richiesta si ferma e risponde `200` con i risultati trovati fin lì: un elenco parziale non è segnalato
-come errore. Le sottocartelle che non si riescono a leggere sono saltate (se ne scrive nel log a livello
-debug). I limiti sono usati come indicati: `0` risultati o `0s` di tempo danno un elenco vuoto.
+la richiesta si ferma e risponde `200` con i risultati trovati fin lì. Le sottocartelle che non si riescono a
+leggere sono saltate. Se qualche cartella entro la profondità massima non è stata letta, perché dà errore o
+perché il tempo è finito, i dati hanno `search_incomplete: true` e il log ne scrive il numero a livello
+info; la pagina di superdufs non mostra questo campo, che si vede con `?json`. I limiti sono usati come
+indicati: `0` risultati o `0s` di tempo danno un elenco vuoto.
 
 Su un remote la ricerca costa un elenco di ogni cartella visitata (una richiesta al backend per cartella,
-se non sono già in cache), quindi su remote grandi o lenti conviene tenere bassi profondità e timeout. Una
-singola lettura già avviata non è interrotta dal timeout: la ricerca si ferma alla sua conclusione.
+se non sono già in cache), quindi su remote grandi o lenti conviene tenere bassi profondità e timeout. Il
+timeout vale anche per una lettura che non risponde: la ricerca smette di aspettarla e risponde, mentre la
+lettura prosegue in background fino ai timeout di rclone. Finché quella lettura non finisce, una ricerca
+ripetuta la ritrova in corso e la aspetta fino al proprio timeout; la cartella che la contiene si apre
+normalmente (vedi "Remote lenti o irraggiungibili").
 
 ### Statistiche di spazio
 
@@ -389,6 +397,119 @@ Il package non scrive nel log chiavi né token. I log upstream riportano però i
 arrivano all'autenticazione o al server WebDAV, per esempio un `PUT` a un URL `@public/<token>/...` (rifiutato
 con `401` e registrato come "Unauthorized request", oppure autenticato): il token è nel percorso.
 
+## Remote lenti o irraggiungibili
+
+`serve` non ha retry propri: ogni operazione usa i retry a basso livello del backend
+(`--low-level-retries`, default 10) con `--contimeout` (60s) e `--timeout` (5m di inattività) per tentativo.
+`--retries` vale solo per sync e copy. Un remote che rifiuta la connessione fallisce in fretta; uno che non
+risponde può tenere ferma un'operazione per minuti.
+
+### Profilo consigliato
+
+I default di rclone sono pensati per trasferimenti lunghi e non presidiati, dove aspettare è meglio che
+fallire. Per un server che risponde a persone conviene fallire prima. `docker-serve-webdav/.env.example`
+usa questo profilo:
+
+```sh
+rclone serve webdav remote: --webui \
+  --contimeout 15s --timeout 1m --low-level-retries 5 \
+  --dir-cache-time 1h --vfs-cache-mode full
+```
+
+| Flag | Default rclone | Profilo | Perché |
+|------|----------------|---------|--------|
+| `--contimeout` | `60s` | `15s` | Un host spento o dietro un firewall che scarta i pacchetti si scopre in 15 secondi invece di 60. Vale anche per l'handshake TLS |
+| `--timeout` | `5m` | `1m` | Silenzio massimo del remote, prima dell'inizio della risposta e tra un blocco di dati e il successivo. Non è un limite alla durata di un trasferimento |
+| `--low-level-retries` | `10` | `5` | Ogni tentativo può durare fino a uno dei due timeout: metà tentativi, metà attesa |
+| `--dir-cache-time` | `5m` | `1h` | Le cartelle viste nell'ultima ora si aprono senza toccare il remote, anche se è giù |
+| `--vfs-cache-mode` | `off` | `full` (o `writes`) | Gli upload finiscono su disco e arrivano al remote quando torna |
+
+Su un remote che non risponde un'operazione resta ferma, circa, fino a 5 × 15s se il remote non accetta la
+connessione e fino a 5 × 1m se la accetta ma non risponde; con i default fino a 10 × 60s e 10 × 5m. Per
+tutto quel tempo aspetta anche chi apre la stessa cartella (vedi i limiti della VFS più sotto).
+
+Quando tornare verso i default:
+
+- `--timeout 5m` se il server copia o sposta file grandi lato server (`MOVE` e `COPY` WebDAV su S3,
+  Nextcloud, ownCloud, ...), cancella cartelle grandi o carica file grandi su remote che confermano
+  l'upload solo dopo averlo salvato o ricomposto (Nextcloud e ownCloud con upload a pezzi, un `PUT` WebDAV
+  unico, alcuni S3 compatibili alla chiusura del multipart): il remote risponde solo a operazione finita,
+  il tentativo scade (`timeout awaiting response headers`) e rclone ripete l'operazione da capo. Un upload
+  dalla cache ricarica così l'intero file a ogni tentativo, senza fine.
+- `--low-level-retries 10` su Google Drive, OneDrive, Dropbox, Box e altri remote con rate limit: i
+  tentativi, con pause crescenti, assorbono i rifiuti per troppe richieste.
+- `--contimeout 30s` o più su linee lente, satellitari o mobili.
+
+Con il remote giù:
+
+- `--dir-cache-time` più alto allunga la finestra in cui le cartelle già viste restano navigabili.
+  Scaduto, un elenco che fallisce è un errore: la VFS non serve l'ultimo elenco noto. Le modifiche fatte
+  da fuori arrivano con `--poll-interval` sui remote che lo supportano, altrimenti alla scadenza.
+- Con `--vfs-cache-mode writes` o `full` un upload risponde `201` e rclone lo carica in background
+  riprovando senza limite, fino a 5 minuti tra un tentativo e l'altro, anche dopo un riavvio. I file in
+  attesa non escono dalla cache neanche oltre `--vfs-cache-max-size`: un guasto lungo con molti upload
+  riempie il disco della cache. Nel log:
+  - `vfs cache: failed to upload try #N, will retry in D: <errore>`: tentativo fallito, il prossimo tra
+    `D`; `N` che cresce indica un remote giù o che rifiuta il file;
+  - `vfs cache: upload succeeded try #N`: upload arrivato;
+  - `vfs cache: queuing for upload in D`: upload in coda, anche quelli ripresi dopo un riavvio.
+
+### Risposte dell'interfaccia
+
+| Situazione | Risposta |
+|------------|----------|
+| Il remote dà un errore che il backend riproverebbe (rete, timeout, rate limit) | `503 Service Unavailable` |
+| Il remote riporta un timeout (scadenza del contesto) | `504 Gateway Timeout` |
+| Altro errore del remote | `500` |
+| Il percorso non esiste | `404`, come prima |
+| Upload interrotto dal client | `400 Upload incomplete`; se è il remote a rifiutarlo, il codice dell'errore del remote |
+
+- Una pagina, un link pubblico, un download con token, `?edit`, `?view`, `?tokengen` e `?resume-save` che
+  trovano il remote in errore rispondono con l'errore e non passano la richiesta all'handler upstream, che
+  ripeterebbe la stessa lettura. Un link pubblico risponde `503` e non `404` finché il remote è giù.
+- Le letture della VFS uguali (lo stat dello stesso percorso, l'elenco della stessa cartella) fatte nello
+  stesso momento da più richieste sono condivise: con un remote che non risponde, i tentativi ripetuti del
+  player e le pagine ricaricate non avviano una lettura ciascuno. Ogni richiesta smette di aspettare quando
+  il browser chiude la connessione (o, per ricerca e conteggio delle cartelle, quando scade il loro tempo).
+  Richieste diverse che hanno bisogno della stessa cartella, per esempio file diversi, aspettano la stessa
+  lettura della VFS e ne ricevono il risultato o l'errore.
+- Il player della pagina riprova da solo: `--webui-player-max-retry` (30) e
+  `--webui-player-reconnect-interval` (10 secondi) ne regolano il carico durante un guasto.
+- Con `--vfs-cache-mode writes` un upload riuscito nella cache risponde `201` anche se il remote è giù:
+  rclone lo carica in background riprovando senza limite (fino a 5 minuti tra un tentativo e l'altro) e
+  anche dopo un riavvio. La pagina non mostra gli upload ancora in attesa.
+
+### Limiti della VFS
+
+Sono di rclone e valgono anche per i client WebDAV:
+
+- La lettura dell'elenco di una cartella non si interrompe se il client se ne va: prosegue fino ai timeout
+  di rclone, e chi ha bisogno della stessa cartella nel frattempo aspetta quella lettura e ne riceve il
+  risultato. Le pagine dell'interfaccia non hanno un limite di tempo proprio: restano in attesa finché la
+  lettura finisce o il browser rinuncia. La cartella che la contiene e le altre restano utilizzabili grazie
+  al backport `01-vfs-list-without-lock` ([sviluppo.md](sviluppo.md#backport-da-upstream)): nella VFS di
+  rclone upstream la cartella resta bloccata durante la lettura e il blocco risale alla cartella che la
+  contiene, fino alla radice di un `combine`.
+- Scaduto `--dir-cache-time` un elenco che fallisce è un errore: la VFS non serve l'ultimo elenco noto.
+- Con `combine` le statistiche di spazio (`--webui-disk-stats`) falliscono se un solo upstream fallisce, e
+  l'errore resta in cache per `--dir-cache-time`. Con `union` un upstream che fallisce è escluso in
+  silenzio dall'elenco, che la VFS tiene in cache: i suoi file sembrano spariti fino al prossimo elenco.
+- `combine` non parte se un upstream non si riesce a creare all'avvio (dipende dal backend: alcuni si
+  collegano già alla creazione).
+
+### Correzioni upstream incluse
+
+Il fork include, come [backport](sviluppo.md#backport-da-upstream), correzioni di rclone non ancora unite
+upstream che riguardano `serve` e `mount`:
+
+- la lettura di una cartella non blocca la cartella che la contiene (vedi sopra);
+- un file in cache modificato e letto di continuo viene comunque caricato sul remote: prima ogni lettura
+  rimandava l'upload (rclone/rclone#9979);
+- con `--vfs-read-chunk-streams` 2 o più, un flusso che fallisce o una lettura annullata non bloccano più
+  la lettura per sempre (rclone/rclone#10172);
+- un file che il remote tronca a metà lettura dà un errore invece di essere letto, e messo in cache, come
+  completo (rclone/rclone#10127).
+
 ## Limiti noti
 
 - **Ripresa degli upload.** Riprendere un upload interrotto (`PATCH` con `X-Update-Range: append`) richiede
@@ -408,10 +529,16 @@ con `401` e registrato come "Unauthorized request", oppure autenticato): il toke
 - **Lock e data di modifica.** `PUT` e `PATCH` dal browser non controllano i lock WebDAV e ignorano
   `X-OC-Mtime`, che il browser non usa.
 - **Conteggio delle cartelle.** Con `--webui-dir-count` ogni apertura della pagina costa un elenco per
-  ogni sottocartella; per questo è spento per default. Senza il flag le cartelle non hanno dimensione (un
-  trattino).
-- **Ricerca.** Costa un elenco di ogni cartella visitata e, se raggiunge un limite, dà un elenco parziale
-  senza segnalarlo come errore.
+  ogni sottocartella; per questo è spento per default. Gli elenchi sono fatti in parallelo (al massimo
+  `--checkers` alla volta) e la pagina li aspetta per 5 secondi: le cartelle non lette in tempo, o che danno
+  errore, restano senza numero. Il limite vale per quella richiesta: la lettura di una cartella che non
+  risponde prosegue in background, e la pagina successiva la ritrova in corso e la aspetta per gli stessi 5
+  secondi (vedi "Remote lenti o irraggiungibili"). Senza il flag le cartelle non
+  hanno dimensione (un trattino).
+- **Ricerca.** Costa un elenco di ogni cartella visitata e, se raggiunge un limite, dà un elenco parziale,
+  segnalato solo da `search_incomplete` quando mancano cartelle.
+- **Remote lenti o irraggiungibili.** Vedi la sezione omonima: i limiti principali stanno nella VFS di
+  rclone e valgono anche per i client WebDAV.
 - **Link non stabili senza segreto.** Senza `--webui-secret` i token di download e i link pubblici sono
   firmati con chiavi casuali e smettono di funzionare a ogni riavvio. I token di download non funzionano con
   `--auth-proxy` né senza autenticazione; i link pubblici sono spenti con `--auth-proxy`.

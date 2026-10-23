@@ -23,24 +23,27 @@ type itemFunc func(entry vfs.Node, relDir string) PathItem
 // It reads directories breadth first. Those at more than maxDepth levels
 // below dir aren't read and it stops at maxResults hits or when ctx is
 // done, returning the hits found so far. A directory which can't be read
-// is skipped.
-func search(ctx context.Context, dir *vfs.Dir, needle string, maxDepth, maxResults int, newItem itemFunc) []PathItem {
+// is skipped. unread is the number of directories within maxDepth which
+// weren't read because they failed or ctx was done first.
+func search(ctx context.Context, l *lookups, dir *vfs.Dir, needle string, maxDepth, maxResults int, newItem itemFunc) (results []PathItem, unread int) {
 	type queued struct {
 		dir   *vfs.Dir
 		rel   string
 		depth int
 	}
-	var results []PathItem
 	queue := []queued{{dir: dir}}
 	for len(queue) > 0 && len(results) < maxResults {
-		cur := queue[0]
-		queue = queue[1:]
 		if ctx.Err() != nil {
+			unread += len(queue)
 			break
 		}
-		entries, err := cur.dir.ReadDirAll()
+		cur := queue[0]
+		queue = queue[1:]
+		entries, err := l.readDir(ctx, cur.dir)
 		if err != nil {
-			fs.Debugf(cur.dir.Path(), "webui: search failed to list directory: %v", err)
+			// Not cur.dir.Path() which waits for a listing which hangs
+			fs.Debugf(cur.rel, "webui: search failed to list directory: %v", err)
+			unread++
 			continue
 		}
 		for _, entry := range entries {
@@ -55,22 +58,26 @@ func search(ctx context.Context, dir *vfs.Dir, needle string, maxDepth, maxResul
 			}
 		}
 	}
-	return results
+	return results, unread
 }
 
 // searchItems returns the unsorted results of a search below the directory
 // remote of the VFS for the lowercase needle, within the limits of the
-// options
-func (u *UI) searchItems(ctx context.Context, VFS *vfs.VFS, dir *vfs.Dir, remote, needle string) []PathItem {
+// options, and whether some directories couldn't be searched
+func (u *UI) searchItems(ctx context.Context, VFS *vfs.VFS, dir *vfs.Dir, remote, needle string) (items []PathItem, incomplete bool) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(u.opt.SearchTimeout))
 	defer cancel()
-	return search(ctx, dir, needle, u.opt.SearchMaxDepth, u.opt.SearchMaxResults,
+	items, unread := search(ctx, &u.lookups, dir, needle, u.opt.SearchMaxDepth, u.opt.SearchMaxResults,
 		func(entry vfs.Node, relDir string) PathItem {
-			item := u.entryItem(VFS, entry, path.Join(remote, relDir), false)
+			item := u.entryItem(VFS, entry, path.Join(remote, relDir))
 			item.PublinkToken = u.publinkToken(path.Join(remote, relDir, item.Name))
 			item.Name = path.Join(relDir, item.Name)
 			return item
 		})
+	if unread > 0 {
+		fs.Infof(remote, "webui: search incomplete: %d directories not read", unread)
+	}
+	return items, unread > 0
 }
 
 // diskStats is the reply of ?disk-stats, where an unknown value is null

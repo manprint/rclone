@@ -1,21 +1,29 @@
 package webui
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/http/serve"
 	"github.com/rclone/rclone/vfs"
+	"golang.org/x/sync/errgroup"
 )
 
 // maxDirCount caps the child count reported for a directory
 const maxDirCount = 1000
+
+// dirCountTimeout is how long a listing waits for the child counts of its
+// directories before showing the missing ones as unknown
+var dirCountTimeout = 5 * time.Second
 
 // pageHeaders are the security headers of the HTML pages
 var pageHeaders = map[string]string{
@@ -82,8 +90,16 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	node, err := VFS.Stat(remote)
-	if err != nil || !node.IsDir() {
+	node, err := u.lookups.stat(ctx, VFS, remote)
+	if errors.Is(err, vfs.ENOENT) {
+		return false
+	}
+	if err != nil {
+		// Passing on would make the next handler repeat the lookup
+		vfsError(w, remote, err)
+		return true
+	}
+	if !node.IsDir() {
 		return false
 	}
 
@@ -103,11 +119,14 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 
-	var items []PathItem
+	var (
+		items            []PathItem
+		searchIncomplete bool
+	)
 	needle := strings.ToLower(strings.TrimSpace(query.Get("q")))
 	switch {
 	case u.opt.Search && needle != "":
-		items = u.searchItems(ctx, VFS, node.(*vfs.Dir), remote, needle)
+		items, searchIncomplete = u.searchItems(ctx, VFS, node.(*vfs.Dir), remote, needle)
 		if items == nil {
 			items = []PathItem{}
 		}
@@ -115,15 +134,16 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		u.serveDiskStats(w, r, VFS)
 		return true
 	default:
-		entries, err := node.(*vfs.Dir).ReadDirAll()
+		entries, err := u.lookups.readDir(ctx, node.(*vfs.Dir))
 		if err != nil {
-			serve.Error(ctx, remote, w, "Failed to list directory", err)
+			vfsError(w, remote, err)
 			return true
 		}
 		items = make([]PathItem, 0, len(entries))
 		for _, entry := range entries {
 			items = append(items, u.pathItem(VFS, entry, remote))
 		}
+		u.fillDirCounts(ctx, entries, items)
 	}
 	sortPathItems(items, query.Get("sort"), query.Get("order"), query.Has("sort"))
 	publinkEnabled := u.publinksEnabled() && u.allowed(remote)
@@ -151,6 +171,7 @@ func (u *UI) serveListing(w http.ResponseWriter, r *http.Request) bool {
 		PublinkEnabled:                publinkEnabled,
 		EnableDataStats:               u.opt.DiskStats,
 		ShowConcurrentUploadsSettings: u.opt.UploadSettings,
+		SearchIncomplete:              searchIncomplete,
 	}
 	u.writeData(w, r, remote, &data, query.Has("json"))
 	return true
@@ -186,14 +207,14 @@ func (u *UI) writeData(w http.ResponseWriter, r *http.Request, remote string, da
 // pathItem returns the listing entry for the node, which is in the
 // directory dir of the VFS
 func (u *UI) pathItem(VFS *vfs.VFS, entry vfs.Node, dir string) PathItem {
-	item := u.entryItem(VFS, entry, dir, true)
+	item := u.entryItem(VFS, entry, dir)
 	item.PublinkToken = u.publinkToken(path.Join(dir, item.Name))
 	return item
 }
 
-// entryItem is pathItem which counts the entries of a directory only if
-// countDirs is set and the options ask for it
-func (u *UI) entryItem(VFS *vfs.VFS, entry vfs.Node, dir string, countDirs bool) PathItem {
+// entryItem is pathItem without the public link, and with a size of -1 for
+// a directory which fillDirCounts may replace
+func (u *UI) entryItem(VFS *vfs.VFS, entry vfs.Node, dir string) PathItem {
 	item := PathItem{
 		PathType: PathTypeFile,
 		Name:     entry.Name(),
@@ -205,30 +226,43 @@ func (u *UI) entryItem(VFS *vfs.VFS, entry vfs.Node, dir string, countDirs bool)
 	if entry.IsDir() {
 		item.PathType = PathTypeDir
 		item.Size = -1
-		if countDirs {
-			item.Size = u.dirSize(entry)
-		}
 	} else {
 		item.ResumePosition = u.resumePosition(VFS, path.Join(dir, item.Name))
 	}
 	return item
 }
 
-// dirSize returns the size shown for a directory: -1, or the number of
-// its children (up to maxDirCount) if the option asks for it and the
-// directory can be listed.
-func (u *UI) dirSize(entry vfs.Node) int64 {
+// fillDirCounts sets the size of the items of directories to the number of
+// their children (up to maxDirCount) if the options ask for it. items[i]
+// must be the entry of nodes[i].
+//
+// The directories are listed in parallel and those which can't be listed
+// within dirCountTimeout keep the size -1, so that a remote which hangs
+// doesn't hold up the listing.
+func (u *UI) fillDirCounts(ctx context.Context, nodes []vfs.Node, items []PathItem) {
 	if !u.opt.DirCount {
-		return -1
+		return
 	}
-	dir, ok := entry.(*vfs.Dir)
-	if !ok {
-		return -1
+	ctx, cancel := context.WithTimeout(ctx, dirCountTimeout)
+	defer cancel()
+	var g errgroup.Group
+	g.SetLimit(max(1, fs.GetConfig(ctx).Checkers))
+	for i, node := range nodes {
+		dir, ok := node.(*vfs.Dir)
+		if !ok {
+			continue
+		}
+		g.Go(func() error {
+			children, err := u.lookups.readDir(ctx, dir)
+			if err != nil {
+				// Not dir.Path(), which waits while the directory is
+				// listed with its lock held
+				fs.Debugf(items[i].Name, "webui: failed to count directory entries: %v", err)
+				return nil
+			}
+			items[i].Size = int64(min(len(children), maxDirCount))
+			return nil
+		})
 	}
-	children, err := dir.ReadDirAll()
-	if err != nil {
-		fs.Debugf(dir.Path(), "webui: failed to count directory entries: %v", err)
-		return -1
-	}
-	return int64(min(len(children), maxDirCount))
+	_ = g.Wait()
 }

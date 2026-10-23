@@ -143,6 +143,77 @@ WebDAV non proteggerebbe nulla; con il default `true` nulla cambia. L'esistenza 
 anche sul backend, perché con una cache degli elenchi lunga la VFS può non conoscere un file aggiunto da
 fuori. Dettagli in [uso.md](uso.md#upload-senza-cancellazione).
 
+## 12. Release `v1.75.2-webui.3`
+
+Su richiesta dell'utente `docker-serve-webdav/` (T-A006) e `--webui-allow-delete` (T-A007) sono stati
+portati sul ramo `v1.75-webui` prendendo i percorsi del fork da `main` (`6854a0c36`); `webdav.go` e la CI
+generata non cambiavano. Footprint rispetto a v1.75.2, build, test con e senza interfaccia e lint dei
+percorsi del fork sono passati sul ramo prima del tag (`0ac086ea8`). Il run del tag ha pubblicato al primo
+tentativo [la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.3), con 51 file come
+la precedente, e le immagini `1.75.2-webui.3`, `1.75`, `1` e `latest`: `latest` stampa
+`rclone v1.75.2-webui.3` e ha `--webui-allow-delete`. `lint` è rosso solo per i due `errcheck` upstream di
+`cmd/serve/rc.go` (§9).
+
+## 13. Remote lenti o irraggiungibili (B-A004)
+
+Un'analisi della fase di `serve` con remote che non rispondono (per esempio un upstream di `combine`) ha
+trovato nell'interfaccia sette punti deboli, corretti tutti in `webui/` su richiesta dell'utente.
+`--webui-allow-delete=false` lasciava passare una sovrascrittura quando il controllo di esistenza falliva
+per un errore del remote: ora la rifiuta, e lo stesso fa la guardia del `MOVE`. Uno zip interrotto a metà
+chiudeva la risposta come se fosse completo: ora interrompe la connessione. Gli errori del remote non
+passano più all'handler upstream, che ripeteva la stessa lettura, e danno `503`/`504` invece di `500`,
+`404` o `400`. La ricerca e il conteggio delle cartelle non aspettano più oltre il loro tempo una cartella
+che non risponde (la ricerca lo segnala con `search_incomplete`), e le letture uguali di richieste
+contemporanee sono condivise (`webui/lookup.go`). I test usano un backend che fallisce o si blocca a
+comando (`webui/faulty_test.go`).
+
+Restano i limiti della VFS upstream, documentati in
+[uso.md](uso.md#remote-lenti-o-irraggiungibili): la lettura di una cartella la tiene bloccata e non si
+interrompe, e il blocco risale alla cartella che la contiene, fino alla radice di un `combine`.
+
+## 14. Profilo per remote lenti o irraggiungibili (T-A008)
+
+Su richiesta dell'utente ("documenta bene questa cosa e proponili come default") `docker-serve-webdav`
+usa un profilo che fallisce prima con un remote che non risponde: `RCLONE_CONTIMEOUT=15s`,
+`RCLONE_TIMEOUT=1m`, `RCLONE_LOW_LEVEL_RETRIES=5`, oltre a `RCLONE_DIR_CACHE_TIME=1h` e
+`RCLONE_VFS_CACHE_MODE=full` già presenti; `RCLONE_DISABLE_HTTP2` è proposta commentata. Un'operazione
+ferma su un remote muto passa da 10-50 minuti a circa 1-5. I default di rclone non cambiano.
+[uso.md](uso.md#profilo-consigliato) e il README del compose spiegano i compromessi: `--timeout` conta
+anche l'attesa della risposta, quindi copie lato server e upload grandi confermati a fine salvataggio
+(Nextcloud, ownCloud) vogliono `5m`, altrimenti sono ripetuti da capo; i remote con rate limit vogliono
+10 tentativi; i file in attesa di upload non escono dalla cache.
+
+## 15. Backport da upstream e VFS senza blocco della cartella (T-A009)
+
+L'utente ha chiesto di correggere in rclone la cascata di blocchi della §13 e di portare nel fork anche
+correzioni upstream non ancora unite, senza perdere la sincronizzazione senza conflitti. Il fork ora
+porta queste correzioni come backport: un commit ciascuna con la sua patch in `webui/backports/`.
+`check-footprint.sh` confronta il fork con la base upstream con le patch applicate, e `sync-upstream.sh`
+toglie da sola una patch quando upstream la contiene identica; se upstream la unisce modificata, il
+merge dà conflitto su quei file e si tiene la versione upstream ([sviluppo.md](sviluppo.md#backport-da-upstream)).
+
+Il primo backport è una patch del fork per la VFS (`01-vfs-list-without-lock`), preparata su un ramo
+dalla base upstream e da proporre per rclone/rclone#9643 seguendo le indicazioni del maintainer in #9644:
+la cartella non resta bloccata mentre si legge il suo elenco, che si applica solo se la cartella non è
+cambiata nel frattempo (contatore di generazione, al più 3 tentativi, poi lettura col blocco come prima);
+chi ha bisogno della stessa cartella aspetta quella lettura e ne condivide risultato ed errore. Durante
+la revisione un test ha trovato che una cartella dimenticata proprio alla fine di una lettura dava elenchi
+vuoti a chi aspettava: corretto prima del commit. `TestParentPageWithHungChild` in `webui/faulty_test.go`
+verifica dall'interfaccia che la pagina della cartella genitore non aspetti più una sottocartella appesa.
+
+## 16. Backport di correzioni upstream per serve e mount (T-A010)
+
+Da una ricerca sulle PR upstream aperte che rendono più robusti `serve` e `mount`, l'utente ha approvato
+il backport delle cinque più utili. Ne sono entrate tre, ognuna con l'autore originale e la sua patch:
+rclone/rclone#9979 (upload mai avviati mentre un file sporco continua a essere letto), #10172 (lettore
+parallelo bloccato quando un flusso fallisce o la lettura è annullata) e #10127 (EOF prematuro della
+sorgente preso per fine del file). I loro test falliscono senza la correzione e passano con. Due sono
+rimaste fuori: #9936 (`COPY` WebDAV interrotto pubblicato come file completo) non si applica più neanche a
+upstream, dopo le correzioni di sicurezza di `webdav.go`, e #9965 (download limitato alla dimensione
+remota) fa fallire il test upstream `TestItemWaiterBeyondItemSize`. Vanno aggiornate upstream dai loro
+autori. Una seconda ricerca sulle prestazioni non ha trovato PR con benchmark da portare; l'unico tuning
+senza patch, `--disable-http2`, è proposto commentato in `docker-serve-webdav` (§14).
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

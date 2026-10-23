@@ -132,6 +132,10 @@ fork viene da `main`, quindi da un `master` più recente della release: la CI de
 testa sulla release prima di pubblicare. Se `git apply` lascia conflitti (di solito le 3 righe di
 `cmd/serve/webdav/webdav.go`), si risolvono come in un merge.
 
+La differenza porta anche i [backport](sviluppo.md#backport-da-upstream) con le loro patch. Se una patch
+non si applica alla release, il footprint la nomina: sul ramo della release si toglie quel backport
+(`git rm` della patch e `git apply -R` della patch sui file) oppure lo si rifà sulla release.
+
 Una correzione successiva della CI del fork si porta su un ramo così prendendo `gen-ci.py` da `main` e
 rigenerando i workflow sul ramo; i workflow di `main` non si copiano, perché vengono da quelli di
 `master`:

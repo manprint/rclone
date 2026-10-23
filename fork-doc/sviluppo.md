@@ -22,7 +22,8 @@ d'uso è in [uso.md](uso.md), la build in [build.md](build.md), la CI in [ci-e-r
 | `webui/resume.go` | Posizioni di riproduzione (`?resume-get`, `?resume-save`, `?resume-clear`) |
 | `webui/token.go` | Chiavi derivate dal segreto, token di download (`?tokengen`, `?token`) |
 | `webui/public.go` | Link pubblici `@public` |
-| `webui/util.go` | Funzioni comuni: intestazione `Origin`, utente, percorsi di destinazione, errori |
+| `webui/util.go` | Funzioni comuni: intestazione `Origin`, utente, percorsi di destinazione, errori e loro codice HTTP |
+| `webui/lookup.go` | Stat ed elenchi della VFS condivisi tra richieste contemporanee e abbandonati quando la richiesta finisce |
 | `webui/assets/` | Asset di superdufs, byte per byte, e `SOURCE` (provenienza) |
 | `webui/overlay/overlay.js` | Le sole correzioni JavaScript del fork, caricate dopo `index.js` |
 | `webui/scripts/` | `check-footprint.sh`, `sync-assets.sh`, `sync-upstream.sh`, `smoke.sh`, `build.sh`, `gen-ci.py` |
@@ -114,6 +115,46 @@ controlli). Per rinunciare: `git merge --abort`.
 Dopo ogni sincronizzazione, se `go test` fallisce nei test di PreAuth, upstream ha cambiato l'ordine dei
 middleware o delle opzioni di `libhttp.NewServer`: va adattato il glue, non gli asset.
 
+### Backport da upstream
+
+Una correzione upstream non ancora unita (una PR aperta, o una patch del fork proposta a upstream) si
+porta nel fork come backport: un commit che contiene la correzione e la sua patch in
+`webui/backports/NN-<nome>.patch`, generata con `git format-patch` dal commit stesso prima di aggiungerla.
+`git revert` di quel commit toglie il backport per intero.
+
+- `check-footprint.sh` costruisce in un indice temporaneo la base upstream con le patch applicate, in
+  ordine di nome, e confronta il fork con quella: un file upstream toccato da un backport deve coincidere
+  con la patch, e le regole di `webdav.go` valgono come prima. Fallisce se una patch non si applica più
+  alla base, o se due patch toccano lo stesso file.
+- `sync-upstream.sh`, dopo il merge, cancella e committa le patch che si annullano all'indietro sulla
+  versione upstream appena unita, cioè quelle che upstream contiene già identiche.
+- Se upstream unisce la correzione modificata o ne fa un'altra, il merge dà conflitto sui file del
+  backport e lo script dice quale patch li tocca: si tiene la versione upstream del file e si fa
+  `git rm` della patch. Se invece upstream ha solo cambiato righe vicine, si rifà il backport sul nuovo
+  codice.
+- Una PR si porta solo se il suo diff (`git diff`, che funziona anche con i merge nel ramo della PR) si
+  applica senza modifiche alla base del fork: adattata a mano non
+  coinciderebbe più con quella che upstream unirà, e non sparirebbe da sola.
+
+```bash
+git fetch upstream pull/<N>/head:pr-<N>
+git diff "$(git merge-base upstream/master pr-<N>)" pr-<N> | git apply --index
+git commit --author="<autore della PR>"   # "task(<unità>): <titolo della PR> (backport)", nel corpo
+                                         # "Backport of rclone/rclone#<N> (head <sha>)" e i messaggi upstream
+git format-patch -1 --stdout HEAD > webui/backports/<NN>-pr<N>.patch
+git add webui/backports && git commit --amend --no-edit
+webui/scripts/check-footprint.sh
+git branch -D pr-<N>
+```
+
+L'elenco dei backport è la cartella `webui/backports/`: ogni patch inizia con il messaggio del suo commit,
+che dice cosa corregge e da quale PR viene (`grep -h '^Subject:' webui/backports/*.patch`). Quando una patch
+sparisce perché upstream l'ha unita, `sync-upstream.sh` ricorda di aggiornare i documenti che la citano
+(`grep -rn <nome> fork-doc docker-serve-webdav`).
+
+Una PR non si porta, o si toglie con `git revert`, se non si applica alla base del fork o se rompe un test
+upstream: in quel caso va aggiornata upstream dal suo autore.
+
 ### Con superdufs
 
 Gli asset (`webui/assets/index.html`, `index.js`, `index.css`, `favicon.ico`) sono copiati byte per byte da
@@ -179,5 +220,8 @@ e `golangci-lint run ./webui/... ./cmd/serve/webdav/...`.
 una cartella temporanea e verifica la pagina per i browser, l'elenco upstream per `curl`, le scritture con
 `Origin`, `?json`, `?zip`, il rifiuto del `MOVE` su una cartella esistente, i token, i link pubblici e
 l'assenza della pagina con `--webui=false`. Stampa `smoke OK` ed esce con `0`; richiede `curl` e `python3`.
+
+`webui/faulty_test.go` prova l'interfaccia con un remote che fallisce o non risponde (`faultyFs`, un `fs.Fs`
+che avvolge `local` e fa fallire o bloccare a comando elenchi, `NewObject` e `Put`).
 
 Gli script si controllano con `bash -n webui/scripts/*.sh` e `shellcheck webui/scripts/*.sh`.

@@ -17,8 +17,8 @@ import (
 // Range, conditional and HEAD requests are handled. A remote which isn't a
 // file is a 404. The files which a browser would run scripts from are
 // sandboxed.
-func serveFileRaw(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, remote string) {
-	node, err := VFS.Stat(remote)
+func (u *UI) serveFileRaw(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, remote string) {
+	node, err := u.lookups.stat(r.Context(), VFS, remote)
 	if err != nil {
 		vfsError(w, remote, err)
 		return

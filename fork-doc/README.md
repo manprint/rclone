@@ -52,7 +52,8 @@ tutto ciò che è del fork sta in file e cartelle che upstream non ha.
 | `.github/workflows/fork-*.yml` | La CI del fork, generata dai workflow upstream da `webui/scripts/gen-ci.py` |
 | `fork-doc/` | Questa documentazione, l'analisi e il piano |
 | `docker-serve-webdav/` | Docker compose, `.env` e template di `rclone.conf` per usare l'immagine con `serve webdav` |
-| `cmd/serve/webdav/webdav.go` | L'unico file upstream toccato: tre righe aggiunte, marcate `// fork:webui`, nessuna riga cambiata |
+| `cmd/serve/webdav/webdav.go` | L'unico file upstream toccato dal codice del fork: tre righe aggiunte, marcate `// fork:webui`, nessuna riga cambiata |
+| `webui/backports/*.patch` | Le correzioni upstream portate nel fork prima che upstream le unisca (backport), una patch per correzione; i file upstream che toccano sono ammessi solo se coincidono con la patch |
 
 Restano come upstream, tra gli altri, `go.mod` e `go.sum` (nessuna dipendenza nuova), `Makefile`,
 `Dockerfile`, `.gitattributes`, i workflow in `.github/workflows/` che non iniziano con `fork-`, il
@@ -66,6 +67,13 @@ dopo ogni merge e il job `webui` della CI a ogni push. L'unico conflitto possibi
 
 Le aggiunte future seguono la stessa regola: codice nuovo in `webui/` o in file nuovi `*_webui*.go`,
 documentazione e piani in `fork-doc/`, nessuna modifica ai file upstream.
+
+L'unica eccezione sono i backport: PR upstream aperte (o patch proposte a upstream) che correggono
+`serve` e `mount`, portate nel fork con un commit ciascuna e registrate in `webui/backports/`. Il footprint
+le conta come parte di upstream, e `sync-upstream.sh` toglie da solo quelle che upstream ha unito così
+come sono. Se upstream le unisce modificate, o corregge lo stesso problema in un altro modo, il merge
+dà un conflitto su quei file: si tiene il codice upstream e si cancella la patch. L'elenco e la procedura
+sono in [sviluppo.md](sviluppo.md#backport-da-upstream).
 
 ## Aggiornare il fork
 

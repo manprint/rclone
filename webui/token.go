@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/vfs"
 )
 
 // tokenSigLen is the number of bytes of the HMAC kept in a token
@@ -124,8 +126,12 @@ func (u *UI) serveTokengen(w http.ResponseWriter, r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	if _, err := VFS.Stat(remote); err != nil {
+	if _, err := u.lookups.stat(r.Context(), VFS, remote); errors.Is(err, vfs.ENOENT) {
 		return false
+	} else if err != nil {
+		// Passing on would make the next handler repeat the lookup
+		vfsError(w, remote, err)
+		return true
 	}
 	body := ""
 	if u.tokensUsable() {
@@ -184,7 +190,7 @@ func (u *UI) tokenDownload(r *http.Request) http.Handler {
 	if err != nil {
 		return nil
 	}
-	node, statErr := VFS.Stat(remote)
+	node, statErr := u.lookups.stat(r.Context(), VFS, remote)
 	var serve func(w http.ResponseWriter, r *http.Request)
 	switch {
 	case statErr != nil:
@@ -203,7 +209,7 @@ func (u *UI) tokenDownload(r *http.Request) http.Handler {
 	default:
 		serve = func(w http.ResponseWriter, r *http.Request) {
 			fs.Infof(remote, "webui: token download for user %q", user)
-			serveFileRaw(w, r, VFS, remote)
+			u.serveFileRaw(w, r, VFS, remote)
 		}
 	}
 	return u.publicWrap(u.hold(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
-	"github.com/rclone/rclone/lib/http/serve"
 	"github.com/rclone/rclone/vfs"
 )
 
@@ -77,15 +77,16 @@ func parseSelection(raw string, max int) (rels []string, status int, msg string)
 //
 // The query says what to zip: with zip=multi the directory entries named by
 // its paths parameter (see parseSelection) and otherwise the whole
-// directory. The zip is streamed so an error once the body has started is
-// only logged.
+// directory. The zip is streamed so an error once the body has started
+// breaks the connection, which is the only way left to tell the client
+// that the zip is incomplete.
 func (u *UI) serveZip(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, dirRemote string, query url.Values) {
 	ctx := r.Context()
 	if u.cfg.DisableZip {
 		httpError(w, http.StatusForbidden, "Zip downloads are disabled")
 		return
 	}
-	node, err := VFS.Stat(dirRemote)
+	node, err := u.lookups.stat(ctx, VFS, dirRemote)
 	if err != nil {
 		vfsError(w, dirRemote, err)
 		return
@@ -114,8 +115,8 @@ func (u *UI) serveZip(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, dirR
 				httpError(w, http.StatusBadRequest, "Invalid selection path")
 				return
 			}
-			if _, err := VFS.Stat(full); err != nil {
-				httpError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+			if _, err := u.lookups.stat(ctx, VFS, full); err != nil {
+				vfsError(w, full, err)
 				return
 			}
 		}
@@ -129,9 +130,9 @@ func (u *UI) serveZip(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, dirR
 		name = base + ".zip"
 		// vfs.CreateZip isn't used as it names the entries below the second
 		// level of directories with their full paths.
-		children, err := dir.ReadDirAll()
+		children, err := u.lookups.readDir(ctx, dir)
 		if err != nil {
-			serve.Error(ctx, dirRemote, w, "Failed to list directory", err)
+			vfsError(w, dirRemote, err)
 			return
 		}
 		rels := make([]string, len(children))
@@ -151,7 +152,14 @@ func (u *UI) serveZip(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS, dirR
 	}
 	fs.Infof(dirRemote, "%s: Zipping %s", r.RemoteAddr, name)
 	if err := body(w); err != nil {
-		fs.Errorf(dirRemote, "webui: zip failed: %v", err)
+		if errors.Is(err, context.Canceled) {
+			fs.Debugf(dirRemote, "webui: zip failed: %v", err)
+		} else {
+			fs.Errorf(dirRemote, "webui: zip failed: %v", err)
+		}
+		// Ending the response normally would make the client take the
+		// zip as complete
+		panic(http.ErrAbortHandler)
 	}
 }
 

@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/fserrors"
 	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/rclone/rclone/vfs"
 )
@@ -85,12 +87,20 @@ func httpError(w http.ResponseWriter, status int, msg string) {
 }
 
 // errStatus returns the HTTP status for an error from the VFS
+//
+// A remote which timed out or can't be reached for now, as told by the
+// errors a backend would retry, is reported as unavailable so that clients
+// can tell it from a lasting failure.
 func errStatus(err error) int {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return http.StatusNotFound
 	case errors.Is(err, vfs.EROFS), errors.Is(err, os.ErrPermission):
 		return http.StatusForbidden
+	case errors.Is(err, context.DeadlineExceeded):
+		return http.StatusGatewayTimeout
+	case errors.Is(err, context.Canceled), fserrors.IsRetryError(err), fserrors.ShouldRetry(err):
+		return http.StatusServiceUnavailable
 	}
 	return http.StatusInternalServerError
 }
@@ -99,7 +109,11 @@ func errStatus(err error) int {
 // error if it is unexpected
 func vfsError(w http.ResponseWriter, remote string, err error) {
 	status := errStatus(err)
-	if status == http.StatusInternalServerError {
+	switch {
+	case errors.Is(err, context.Canceled):
+		// The client went away
+		fs.Debugf(remote, "webui: %v", err)
+	case status >= http.StatusInternalServerError:
 		fs.Errorf(remote, "webui: %v", err)
 	}
 	httpError(w, status, http.StatusText(status))

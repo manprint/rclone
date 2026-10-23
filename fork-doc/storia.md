@@ -201,6 +201,19 @@ la revisione un test ha trovato che una cartella dimenticata proprio alla fine d
 vuoti a chi aspettava: corretto prima del commit. `TestParentPageWithHungChild` in `webui/faulty_test.go`
 verifica dall'interfaccia che la pagina della cartella genitore non aspetti più una sottocartella appesa.
 
+## 16. Backport di correzioni upstream per serve e mount (T-A010)
+
+Da una ricerca sulle PR upstream aperte che rendono più robusti `serve` e `mount`, l'utente ha approvato
+il backport delle cinque più utili. Ne sono entrate tre, ognuna con l'autore originale e la sua patch:
+rclone/rclone#9979 (upload mai avviati mentre un file sporco continua a essere letto), #10172 (lettore
+parallelo bloccato quando un flusso fallisce o la lettura è annullata) e #10127 (EOF prematuro della
+sorgente preso per fine del file). I loro test falliscono senza la correzione e passano con. Due sono
+rimaste fuori: #9936 (`COPY` WebDAV interrotto pubblicato come file completo) non si applica più neanche a
+upstream, dopo le correzioni di sicurezza di `webdav.go`, e #9965 (download limitato alla dimensione
+remota) fa fallire il test upstream `TestItemWaiterBeyondItemSize`. Vanno aggiornate upstream dai loro
+autori. Una seconda ricerca sulle prestazioni non ha trovato PR con benchmark da portare; l'unico tuning
+senza patch, `--disable-http2`, è proposto commentato in `docker-serve-webdav` (§14).
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

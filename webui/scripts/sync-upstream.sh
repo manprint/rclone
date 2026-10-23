@@ -77,6 +77,7 @@ if [ ${#patches[@]} -gt 0 ]; then
 	if [ ${#dropped[@]} -gt 0 ]; then
 		git commit -q -m "webui: drop the backports merged upstream" -m "${dropped[*]}"
 		echo "sync-upstream: dropped the backports merged upstream: ${dropped[*]}"
+		echo "sync-upstream: update the docs which cite them: grep -rn <name> fork-doc docker-serve-webdav"
 	fi
 fi
 

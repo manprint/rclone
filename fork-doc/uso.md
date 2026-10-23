@@ -497,6 +497,19 @@ Sono di rclone e valgono anche per i client WebDAV:
 - `combine` non parte se un upstream non si riesce a creare all'avvio (dipende dal backend: alcuni si
   collegano già alla creazione).
 
+### Correzioni upstream incluse
+
+Il fork include, come [backport](sviluppo.md#backport-da-upstream), correzioni di rclone non ancora unite
+upstream che riguardano `serve` e `mount`:
+
+- la lettura di una cartella non blocca la cartella che la contiene (vedi sopra);
+- un file in cache modificato e letto di continuo viene comunque caricato sul remote: prima ogni lettura
+  rimandava l'upload (rclone/rclone#9979);
+- con `--vfs-read-chunk-streams` 2 o più, un flusso che fallisce o una lettura annullata non bloccano più
+  la lettura per sempre (rclone/rclone#10172);
+- un file che il remote tronca a metà lettura dà un errore invece di essere letto, e messo in cache, come
+  completo (rclone/rclone#10127).
+
 ## Limiti noti
 
 - **Ripresa degli upload.** Riprendere un upload interrotto (`PATCH` con `X-Update-Range: append`) richiede

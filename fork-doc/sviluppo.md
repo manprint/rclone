@@ -132,21 +132,28 @@ porta nel fork come backport: un commit che contiene la correzione e la sua patc
   backport e lo script dice quale patch li tocca: si tiene la versione upstream del file e si fa
   `git rm` della patch. Se invece upstream ha solo cambiato righe vicine, si rifà il backport sul nuovo
   codice.
-- Una PR si porta solo se il suo diff si applica senza modifiche alla base del fork: adattata a mano non
+- Una PR si porta solo se il suo diff (`git diff`, che funziona anche con i merge nel ramo della PR) si
+  applica senza modifiche alla base del fork: adattata a mano non
   coinciderebbe più con quella che upstream unirà, e non sparirebbe da sola.
 
 ```bash
 git fetch upstream pull/<N>/head:pr-<N>
-git cherry-pick --no-commit $(git merge-base main pr-<N>)..pr-<N>
-git commit --author="<autore della PR>" -m "<oggetto upstream> (backport of rclone/rclone#<N>)"
+git diff "$(git merge-base upstream/master pr-<N>)" pr-<N> | git apply --index
+git commit --author="<autore della PR>"   # "task(<unità>): <titolo della PR> (backport)", nel corpo
+                                         # "Backport of rclone/rclone#<N> (head <sha>)" e i messaggi upstream
 git format-patch -1 --stdout HEAD > webui/backports/<NN>-pr<N>.patch
 git add webui/backports && git commit --amend --no-edit
 webui/scripts/check-footprint.sh
+git branch -D pr-<N>
 ```
 
-| Patch | Correzione | Upstream |
-|-------|------------|----------|
-| `01-vfs-list-without-lock.patch` | La VFS legge l'elenco di una cartella senza tenerla bloccata: una lettura lenta o appesa non blocca più la cartella che la contiene (fino alla radice di un `combine`), e chi aspetta la stessa cartella condivide la lettura e il suo errore | Patch del fork per rclone/rclone#9643, sulla linea indicata in #9644; da proporre upstream. Citata in `uso.md` ("Limiti della VFS") |
+L'elenco dei backport è la cartella `webui/backports/`: ogni patch inizia con il messaggio del suo commit,
+che dice cosa corregge e da quale PR viene (`grep -h '^Subject:' webui/backports/*.patch`). Quando una patch
+sparisce perché upstream l'ha unita, `sync-upstream.sh` ricorda di aggiornare i documenti che la citano
+(`grep -rn <nome> fork-doc docker-serve-webdav`).
+
+Una PR non si porta, o si toglie con `git revert`, se non si applica alla base del fork o se rompe un test
+upstream: in quel caso va aggiornata upstream dal suo autore.
 
 ### Con superdufs
 

@@ -1,0 +1,40 @@
+From 9496d1198a444fa79594f1741ce711ab919c4ef6 Mon Sep 17 00:00:00 2001
+From: Nick Craig-Wood <nick@craig-wood.com>
+Date: Fri, 23 Oct 2026 15:37:47 +0200
+Subject: [PATCH] serve: fix errcheck lint errors from golangci-lint v2.15.0
+ (backport)
+
+Backport of the upstream commit 5fe99911c, which is in master but not
+in v1.75.2, carried as webui/backports/05-serve-errcheck.patch so that
+the lint job of the fork passes on this branch.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmd/serve/rc.go | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/cmd/serve/rc.go b/cmd/serve/rc.go
+index a0594102c..aa634f48b 100644
+--- a/cmd/serve/rc.go
++++ b/cmd/serve/rc.go
+@@ -220,7 +220,7 @@ func stopRc(_ context.Context, in rc.Params) (out rc.Params, err error) {
+ 		return nil, fmt.Errorf("server with id=%q not found", id)
+ 	}
+ 	err = s.h.Shutdown()
+-	<-s.errChan // ignore server return error - likely is "use of closed network connection"
++	<-s.errChan //nolint:errcheck // ignore server return error - likely is "use of closed network connection"
+ 	delete(servers, id)
+ 	return nil, err
+ }
+@@ -356,7 +356,7 @@ func stopAll(_ context.Context, in rc.Params) (out rc.Params, err error) {
+ 	ec := errcount.New()
+ 	for id, s := range servers {
+ 		ec.Add(s.h.Shutdown())
+-		<-s.errChan // ignore server return error - likely is "use of closed network connection"
++		<-s.errChan //nolint:errcheck // ignore server return error - likely is "use of closed network connection"
+ 		delete(servers, id)
+ 	}
+ 	return nil, ec.Err("error when stopping server")
+-- 
+2.43.0
+

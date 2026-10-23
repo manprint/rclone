@@ -32,6 +32,15 @@ if ! git -c rerere.enabled=true merge --no-edit "$REF"; then
 	echo >&2
 	echo "sync-upstream: merge conflict in:" >&2
 	git diff --name-only --diff-filter=U | sed 's/^/  /' >&2
+	shopt -s nullglob
+	for patch in webui/backports/*.patch; do
+		files=$(git apply --numstat "$patch" | cut -f3 | grep -Fx -f <(git diff --name-only --diff-filter=U) || true)
+		if [ -n "$files" ]; then
+			subject=$(awk '/^Subject: /{s=$0; while ((getline l) > 0 && l ~ /^ /) s=s l; sub(/^Subject: (\[PATCH[^]]*\] )?/, "", s); print s; exit}' "$patch")
+			echo "  changed by the backport $patch ($subject)" >&2
+		fi
+	done
+	shopt -u nullglob
 	cat >&2 <<'MSG'
 
 To resolve:
@@ -42,9 +51,33 @@ To resolve:
        - the call            w.webuiUse(router) // fork:webui  (before router.Handle)
   2. git add <files> && git commit
   3. Re-run this script (the merge is then a no-op and only the checks run).
+For a file changed by a backport: if upstream merged that change (maybe
+reworked), keep upstream's version of the file and git rm the patch;
+otherwise keep upstream's code and redo the backport on top of it.
 Or give up with: git merge --abort
 MSG
 	exit 1
+fi
+
+# Backports which upstream now contains are dropped: their patch reverses
+# cleanly on the merged upstream.
+shopt -s nullglob
+patches=(webui/backports/*.patch)
+shopt -u nullglob
+if [ ${#patches[@]} -gt 0 ]; then
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' EXIT
+	dropped=()
+	for patch in "${patches[@]}"; do
+		if GIT_INDEX_FILE=$tmp/index sh -c 'git read-tree "$1" && git apply --cached --reverse --check "$2"' _ "$REF" "$patch" 2>/dev/null; then
+			git rm -q -- "$patch"
+			dropped+=("$(basename "$patch")")
+		fi
+	done
+	if [ ${#dropped[@]} -gt 0 ]; then
+		git commit -q -m "webui: drop the backports merged upstream" -m "${dropped[*]}"
+		echo "sync-upstream: dropped the backports merged upstream: ${dropped[*]}"
+	fi
 fi
 
 # The fork CI is generated from the upstream workflows.

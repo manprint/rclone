@@ -115,6 +115,38 @@ controlli). Per rinunciare: `git merge --abort`.
 Dopo ogni sincronizzazione, se `go test` fallisce nei test di PreAuth, upstream ha cambiato l'ordine dei
 middleware o delle opzioni di `libhttp.NewServer`: va adattato il glue, non gli asset.
 
+### Backport da upstream
+
+Una correzione upstream non ancora unita (una PR aperta, o una patch del fork proposta a upstream) si
+porta nel fork come backport: un commit che contiene la correzione e la sua patch in
+`webui/backports/NN-<nome>.patch`, generata con `git format-patch` dal commit stesso prima di aggiungerla.
+`git revert` di quel commit toglie il backport per intero.
+
+- `check-footprint.sh` costruisce in un indice temporaneo la base upstream con le patch applicate, in
+  ordine di nome, e confronta il fork con quella: un file upstream toccato da un backport deve coincidere
+  con la patch, e le regole di `webdav.go` valgono come prima. Fallisce se una patch non si applica più
+  alla base, o se due patch toccano lo stesso file.
+- `sync-upstream.sh`, dopo il merge, cancella e committa le patch che si annullano all'indietro sulla
+  versione upstream appena unita, cioè quelle che upstream contiene già identiche.
+- Se upstream unisce la correzione modificata o ne fa un'altra, il merge dà conflitto sui file del
+  backport e lo script dice quale patch li tocca: si tiene la versione upstream del file e si fa
+  `git rm` della patch. Se invece upstream ha solo cambiato righe vicine, si rifà il backport sul nuovo
+  codice.
+- Una PR si porta solo se il suo diff si applica senza modifiche alla base del fork: adattata a mano non
+  coinciderebbe più con quella che upstream unirà, e non sparirebbe da sola.
+
+```bash
+git fetch upstream pull/<N>/head:pr-<N>
+git cherry-pick --no-commit $(git merge-base main pr-<N>)..pr-<N>
+git commit --author="<autore della PR>" -m "<oggetto upstream> (backport of rclone/rclone#<N>)"
+git format-patch -1 --stdout HEAD > webui/backports/<NN>-pr<N>.patch
+git add webui/backports && git commit --amend --no-edit
+webui/scripts/check-footprint.sh
+```
+
+| Patch | Correzione | Upstream |
+|-------|------------|----------|
+
 ### Con superdufs
 
 Gli asset (`webui/assets/index.html`, `index.js`, `index.css`, `favicon.ico`) sono copiati byte per byte da

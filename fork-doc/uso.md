@@ -404,7 +404,58 @@ con `401` e registrato come "Unauthorized request", oppure autenticato): il toke
 `--retries` vale solo per sync e copy. Un remote che rifiuta la connessione fallisce in fretta; uno che non
 risponde può tenere ferma un'operazione per minuti.
 
-Cosa fa l'interfaccia:
+### Profilo consigliato
+
+I default di rclone sono pensati per trasferimenti lunghi e non presidiati, dove aspettare è meglio che
+fallire. Per un server che risponde a persone conviene fallire prima. `docker-serve-webdav/.env.example`
+usa questo profilo:
+
+```sh
+rclone serve webdav remote: --webui \
+  --contimeout 15s --timeout 1m --low-level-retries 5 \
+  --dir-cache-time 1h --vfs-cache-mode full
+```
+
+| Flag | Default rclone | Profilo | Perché |
+|------|----------------|---------|--------|
+| `--contimeout` | `60s` | `15s` | Un host spento o dietro un firewall che scarta i pacchetti si scopre in 15 secondi invece di 60. Vale anche per l'handshake TLS |
+| `--timeout` | `5m` | `1m` | Silenzio massimo del remote, prima dell'inizio della risposta e tra un blocco di dati e il successivo. Non è un limite alla durata di un trasferimento |
+| `--low-level-retries` | `10` | `5` | Ogni tentativo può durare fino a uno dei due timeout: metà tentativi, metà attesa |
+| `--dir-cache-time` | `5m` | `1h` | Le cartelle viste nell'ultima ora si aprono senza toccare il remote, anche se è giù |
+| `--vfs-cache-mode` | `off` | `full` (o `writes`) | Gli upload finiscono su disco e arrivano al remote quando torna |
+
+Su un remote che non risponde un'operazione resta ferma, circa, fino a 5 × 15s se il remote non accetta la
+connessione e fino a 5 × 1m se la accetta ma non risponde; con i default fino a 10 × 60s e 10 × 5m. Per
+tutto quel tempo resta bloccato anche chi apre la stessa cartella o quella che la contiene (vedi i limiti
+della VFS più sotto).
+
+Quando tornare verso i default:
+
+- `--timeout 5m` se il server copia o sposta file grandi lato server (`MOVE` e `COPY` WebDAV su S3,
+  Nextcloud, ownCloud, ...), cancella cartelle grandi o carica file grandi su remote che confermano
+  l'upload solo dopo averlo salvato o ricomposto (Nextcloud e ownCloud con upload a pezzi, un `PUT` WebDAV
+  unico, alcuni S3 compatibili alla chiusura del multipart): il remote risponde solo a operazione finita,
+  il tentativo scade (`timeout awaiting response headers`) e rclone ripete l'operazione da capo. Un upload
+  dalla cache ricarica così l'intero file a ogni tentativo, senza fine.
+- `--low-level-retries 10` su Google Drive, OneDrive, Dropbox, Box e altri remote con rate limit: i
+  tentativi, con pause crescenti, assorbono i rifiuti per troppe richieste.
+- `--contimeout 30s` o più su linee lente, satellitari o mobili.
+
+Con il remote giù:
+
+- `--dir-cache-time` più alto allunga la finestra in cui le cartelle già viste restano navigabili.
+  Scaduto, un elenco che fallisce è un errore: la VFS non serve l'ultimo elenco noto. Le modifiche fatte
+  da fuori arrivano con `--poll-interval` sui remote che lo supportano, altrimenti alla scadenza.
+- Con `--vfs-cache-mode writes` o `full` un upload risponde `201` e rclone lo carica in background
+  riprovando senza limite, fino a 5 minuti tra un tentativo e l'altro, anche dopo un riavvio. I file in
+  attesa non escono dalla cache neanche oltre `--vfs-cache-max-size`: un guasto lungo con molti upload
+  riempie il disco della cache. Nel log:
+  - `vfs cache: failed to upload try #N, will retry in D: <errore>`: tentativo fallito, il prossimo tra
+    `D`; `N` che cresce indica un remote giù o che rifiuta il file;
+  - `vfs cache: upload succeeded try #N`: upload arrivato;
+  - `vfs cache: queuing for upload in D`: upload in coda, anche quelli ripresi dopo un riavvio.
+
+### Risposte dell'interfaccia
 
 | Situazione | Risposta |
 |------------|----------|
@@ -429,7 +480,9 @@ Cosa fa l'interfaccia:
   rclone lo carica in background riprovando senza limite (fino a 5 minuti tra un tentativo e l'altro) e
   anche dopo un riavvio. La pagina non mostra gli upload ancora in attesa.
 
-Limiti della VFS di rclone, uguali per i client WebDAV e non correggibili nel fork senza toccare upstream:
+### Limiti della VFS
+
+Sono di rclone, uguali per i client WebDAV e non correggibili nel fork senza toccare upstream:
 
 - Mentre si legge l'elenco di una cartella la VFS tiene bloccata quella cartella, e la lettura non si
   interrompe se il client se ne va. Una cartella su un remote che non risponde blocca anche l'elenco della

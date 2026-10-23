@@ -171,6 +171,18 @@ Restano i limiti della VFS upstream, documentati in
 [uso.md](uso.md#remote-lenti-o-irraggiungibili): la lettura di una cartella la tiene bloccata e non si
 interrompe, e il blocco risale alla cartella che la contiene, fino alla radice di un `combine`.
 
+## 14. Profilo per remote lenti o irraggiungibili (T-A008)
+
+Su richiesta dell'utente ("documenta bene questa cosa e proponili come default") `docker-serve-webdav`
+usa un profilo che fallisce prima con un remote che non risponde: `RCLONE_CONTIMEOUT=15s`,
+`RCLONE_TIMEOUT=1m`, `RCLONE_LOW_LEVEL_RETRIES=5`, oltre a `RCLONE_DIR_CACHE_TIME=1h` e
+`RCLONE_VFS_CACHE_MODE=full` già presenti; `RCLONE_DISABLE_HTTP2` è proposta commentata. Un'operazione
+ferma su un remote muto passa da 10-50 minuti a circa 1-5. I default di rclone non cambiano.
+[uso.md](uso.md#profilo-consigliato) e il README del compose spiegano i compromessi: `--timeout` conta
+anche l'attesa della risposta, quindi copie lato server e upload grandi confermati a fine salvataggio
+(Nextcloud, ownCloud) vogliono `5m`, altrimenti sono ripetuti da capo; i remote con rate limit vogliono
+10 tentativi; i file in attesa di upload non escono dalla cache.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

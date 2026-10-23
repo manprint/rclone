@@ -91,7 +91,10 @@ Il job `release` parte solo se sono verdi tutti i job di build e test, quello An
 upstream, che pubblica i binari dai job di build, non aspetta `lint`: il lint usa l'ultima versione di
 golangci-lint, che può segnalare nel codice di una release upstream meno recente problemi corretti dopo
 su `master` (in v1.75.2, per esempio, due `errcheck` in `cmd/serve/rc.go`). Un `lint` rosso su un tag va
-comunque guardato: se segnala codice del fork si corregge su `main` e si fa una nuova release.
+comunque guardato: se segnala codice del fork si corregge su `main` e si fa una nuova release. Se segnala
+codice upstream già corretto su `master`, la correzione si porta sul ramo della release come
+[backport](sviluppo.md#backport-da-upstream): così `v1.75.2-webui.4` porta il commit upstream `5fe99911c`
+(`webui/backports/05-serve-errcheck.patch`) e il suo `lint` è verde.
 
 A volte GitHub non assegna un runner
 macOS e cancella il job con "The job was not acquired by Runner of type hosted": è un limite di capacità di

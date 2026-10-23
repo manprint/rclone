@@ -214,6 +214,23 @@ remota) fa fallire il test upstream `TestItemWaiterBeyondItemSize`. Vanno aggior
 autori. Una seconda ricerca sulle prestazioni non ha trovato PR con benchmark da portare; l'unico tuning
 senza patch, `--disable-http2`, è proposto commentato in `docker-serve-webdav` (§14).
 
+## 17. Release `v1.75.2-webui.4`
+
+Su richiesta dell'utente ("nella ultima release inserisci tutto il lavoro") il ramo `v1.75-webui` ha preso
+da `main` (`2e303c399`) i percorsi del fork di B-A004, T-A008, T-A009 e T-A010, e i backport rifatti su
+v1.75.2 con un commit ciascuno: la patch della VFS (applicata con `--3way`; in `vfs/dir_test.go` è stato
+tolto un test upstream di `master` che v1.75.2 non ha, e `vfs/dir.go` ha le stesse righe cambiate di
+`main`), #9979, #10172, #10127 e in più il commit upstream `5fe99911c`, che toglie i due `errcheck` di
+`cmd/serve/rc.go` per cui `lint` era rosso nelle release precedenti. Sul ramo il footprint rispetto a
+v1.75.2, `golangci-lint run ./...` e i test passavano prima del push.
+
+I push di `main` e del ramo non hanno avviato la CI: GitHub rispondeva "Actions has been disabled for
+this repository" pur con Actions abilitato nelle impostazioni. Dopo che l'utente l'ha riabilitato, i run
+avviati a mano su `main` e sul ramo sono stati tutti verdi, `lint` compreso. Nel run del tag GitHub non ha
+assegnato i runner macOS ("The job was not acquired by Runner of type hosted"): rilanciati i due job, il
+secondo tentativo è verde e ha pubblicato [la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.4)
+con 51 file; le immagini `1.75.2-webui.4` e `latest` stampano `rclone v1.75.2-webui.4`.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

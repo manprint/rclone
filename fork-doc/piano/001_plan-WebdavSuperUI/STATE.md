@@ -89,19 +89,19 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: task T-A010 — backport di correzioni upstream per serve e mount (richiesta utente: "puoi procedere su tutti e tre i punti", punto 3: rclone/rclone#9936, #9979, #10172, #10127, #9965).
+- Active scope: task T-A011 — release `v1.75.2-webui.4` (richieste utente: "Push main to origin., bump release. segui la ci, voglio tutto verde.", "nella ultima release inserisci tutto il lavoro.").
 - Scope result: COMPLETE
 - Type: task
-- ID / attempt: T-A010 / 1
-- Status: CLOSED (unit:T-A010:1)
-- Intent: portare nel fork, con il meccanismo dei backport di T-A009, le PR upstream aperte che correggono blocchi e perdite di dati in serve e mount.
+- ID / attempt: T-A011 / 1
+- Status: CLOSED (unit:T-A011:1)
+- Intent: pubblicare `main` e una release del fork su v1.75.2 con tutto il lavoro di B-A004–T-A010, con la CI tutta verde.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 `git fetch upstream pull/N/head`, controllo che il diff si applichi alla base; S2 un commit per PR con autore originale e patch; S3 test con `-race` dei pacchetti toccati e di serve/webui, test della PR senza la correzione; S4 documentazione.
-- Done: S1–S4; entrate #9979, #10172, #10127; escluse #9936 (non si applica a upstream) e #9965 (rompe `TestItemWaiterBeyondItemSize`).
+- Mini-plan: S1 push di `main`; S2 ramo `v1.75-webui`: percorsi del fork da `main` senza backport, backport rifatti su v1.75.2 uno per commit, `5fe99911c` come backport per `lint`; S3 verifiche locali; S4 CI di `main` e del ramo; S5 tag e CI del tag; S6 registrazione.
+- Done: S1–S6; Actions bloccato da GitHub fino alla riabilitazione dell'utente; job macOS del tag rilanciati per capacità di GitHub.
 - Current step: none
 - Next action: none
 - Next eligible plan unit: none
-- Unit base: c55c22e33; branch: main; owned changes: `webui/backports/{02-pr9979,03-pr10172,04-pr10127}.patch`, `vfs/vfscache/writeback/{writeback.go,writeback_test.go}`, `fs/chunkedreader/{parallel.go,parallel_failure_test.go,sequential.go,sequential_real_test.go}`, `cmd/serve/http/http_test.go` (backport), `webui/scripts/sync-upstream.sh`, `fork-doc/{sviluppo.md,uso.md,storia.md}`, STATE
+- Unit base: 2e303c399; branch: main; owned changes: `fork-doc/ci-e-release.md`, `fork-doc/storia.md`, STATE; ramo `v1.75-webui` (`c5552721a`..`c7daf4a5d`), tag `v1.75.2-webui.4`
 - Repo state: pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
@@ -259,6 +259,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 | task | T-A008 / 1 | 1 | Opus (agent-1) | `.env.example`: sezione 6 (`RCLONE_CONTIMEOUT=15s`, `RCLONE_TIMEOUT=1m`, `RCLONE_LOW_LEVEL_RETRIES=5`, `RCLONE_DISABLE_HTTP2` commentata), sezioni 7-8 rinumerate; README: sezione "Remote lenti o irraggiungibili" (tabelle dei flag e dei tempi, quando alzarli, righe di log) e 4 righe in "Problemi frequenti"; `uso.md`: "Profilo consigliato", sottosezioni "Risposte dell'interfaccia" e "Limiti della VFS"; `storia.md` §14 | §7 (T-A008) | unit:T-A008:1 |
 | task | T-A009 / 1 | 1 | Opus (agent-1) | `check-footprint.sh`: confronto con `read-tree` della merge-base + `git apply --cached` delle patch in ordine, errore se una patch non si applica o due toccano lo stesso file; `sync-upstream.sh`: dopo il merge `git rm` + commit delle patch che si annullano all'indietro su `$REF`, sui conflitti il nome del backport che tocca ogni file; backport VFS: `Dir.generation`, `Dir.listing`/`dirListing` (attesa condivisa, `merged`, generazione alla fine), `_readDir` a tentativi (3, poi lettura col blocco), `_listUnlocked`, `_setEntries`, `listDir`, `cacheCleanup` aspetta la lettura in corso, 8 test `TestDirListing*`; `TestParentPageWithHungChild`; commenti di `lookup.go`/`listing.go`; documentazione | §7 (T-A009) | unit:T-A009:1 |
 | task | T-A010 / 1 | 1 | Opus (agent-1) | backport `02-pr9979` (Neil Cawse), `03-pr10172` (Rob Martin), `04-pr10127` (Nick Sweeting), un commit ciascuno con `--author` e head della PR nel messaggio; `sviluppo.md`: elenco = `webui/backports/`, criteri di esclusione; `sync-upstream.sh` ricorda i documenti da aggiornare quando toglie una patch; `uso.md` "Correzioni upstream incluse"; `storia.md` §16 | §7 (T-A010) | unit:T-A010:1 |
+| task | T-A011 / 1 | 1 | Opus (agent-1) | push `main` `a527815ae..2e303c399`; `v1.75-webui` `0ac086ea8..c7daf4a5d`: percorsi del fork da `main`, backport `01-vfs-list-without-lock` (`--3way`, conflitto in `vfs/dir_test.go` risolto tenendo solo i test della patch), `02-pr9979`, `03-pr10172`, `04-pr10127`, `05-serve-errcheck` (`5fe99911c`); tag `v1.75.2-webui.4` su `c7daf4a5d`; `ci-e-release.md`: correzioni upstream del lint come backport; `storia.md` §17 | §7 (T-A011) | unit:T-A011:1 |
 
 ## 5. Files and ownership
 
@@ -270,12 +271,13 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — T-A010 chiusa (unit:T-A010:1).
+none — T-A011 chiusa (unit:T-A011:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| release `v1.75.2-webui.4` (T-A011) | ramo: `UPSTREAM_REF=v1.75.2 check-footprint.sh`, `go build ./...`, `gen-ci.py --check`, `shellcheck`, `golangci-lint run ./...`, `go test -race ./vfs/... ./fs/chunkedreader/... ./cmd/serve/... ./webui/... ./lib/http/... ./backend/compress/`, `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`, `smoke.sh`; run `39977167599`, `39977172526` (`main`), `39977178324`, `39977183116` (ramo), `39982264041` (tentativo 2), `39982264052` (tag); `gh release view`; `docker run ghcr.io/manprint/rclone:{latest,1.75.2-webui.4} version` | pass | footprint OK, lint 0 issue, test ok salvo un `TestRemoteZstd` di `backend/compress` fallito una volta nel run parallelo e mai riprodotto (0/50, anche sotto carico); `dir.go` del ramo con le stesse righe di `main`; CI di `main`, ramo e tag tutta verde, `lint` compreso; tentativo 1 del tag: `mac_arm64`/`mac_amd64` cancellati da GitHub (runner non assegnato), tentativo 2 verde; release 51 file; immagini `rclone v1.75.2-webui.4` | `c7daf4a5d` | 2026-10-23 |
 | backport upstream (T-A010) | `git diff <merge-base> pr-N \| git apply --check` su main e su `upstream/master`; `go test -race ./vfs/... ./fs/chunkedreader/... ./cmd/serve/... ./webui/... ./lib/http/...`; `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`; test delle PR con `git apply -R` della sola correzione; `golangci-lint`; `shellcheck`; `check-footprint.sh`; `smoke.sh` | pass | #9936 non si applica né a main né a `upstream/master` (`webdav.go:395`); con #9965 FAIL `TestItemWaiterBeyondItemSize` ("the waiter was never dispatched"), senza PASS: commit tolto; senza correzione FAIL `TestWriteBackAddNotModifiedKeepsExpiry` (9979), `TestParallelProducerFailure`/`TestParallelCancellation` (10172), `TestSequentialRealFileEOF`/`TestSequentialHTTPSizeRefresh` (10127), con PASS; suite ok, lint 0, shellcheck ok, `footprint OK` con 4 patch, `smoke OK` | working tree T-A010 | 2026-10-23 |
 | backport e VFS senza blocco (T-A009) | ramo: `go test -race -run TestDirListing ./vfs/` prima e dopo, `-count=50`; `go test -race ./vfs/... ./cmd/serve/... ./cmd/mount/...`; `golangci-lint run ./vfs/...`; base `81e7372f6`: `go test -count=15 -race ./cmd/mountlib/`; fork: `check-footprint.sh` con il backport, con `vfs/dir.go` toccato a mano e senza patch; `go test -race ./webui/... ./cmd/serve/webdav/ ./vfs/... ./lib/http/...`; `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`; `TestParentPageWithHungChild` senza la correzione in `vfs/dir.go`; `golangci-lint`; `shellcheck`; `smoke.sh` | pass | prima: FAIL `TestDirListingDoesNotBlock` (Name bloccato), `TestDirListingShared/fail=true` (5 elenchi), `TestDirListingForgotten` 11/30; dopo: 50/50 PASS; suite ok, lint 0; `TestRc*`/`TestVFSNew` falliscono con `-count>1` anche sulla base, la race di `mountRc` c'è anche sulla base (2 su 15); footprint OK, FAIL `vfs/dir.go` modificato a mano, FAIL senza patch; webui ok, `TestParentPageWithHungChild` FAIL senza correzione (`still running after 2s`), PASS con; lint 0, shellcheck ok, `smoke OK` | working tree T-A009 | 2026-10-23 |
 | profilo remote lenti (T-A008) | `docker compose config` con `.env.example` come `.env`; `RCLONE_CONTIMEOUT=15s RCLONE_TIMEOUT=1m RCLONE_LOW_LEVEL_RETRIES=5 go run . -vv lsd`; `go run . help flags`; `check-footprint.sh` | pass | compose: le tre variabili nell'ambiente del servizio; rclone: `Setting --contimeout "15s"`, `--timeout "1m0s"`, `--low-level-retries "5"` da env; `--disable-http2` esiste; `footprint OK` | working tree T-A008 | 2026-10-23 |

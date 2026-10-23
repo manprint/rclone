@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,18 +32,28 @@ type Dir struct {
 	f            fs.Fs       // read only
 	cleanupTimer *time.Timer // read only: timer to call cacheCleanup
 
-	mu      sync.RWMutex // protects the following
-	parent  *Dir         // parent, nil for root
-	path    string
-	entry   fs.Directory
-	read    time.Time         // time directory entry last read
-	items   map[string]Node   // directory entries - can be empty but not nil
-	virtual map[string]vState // virtual directory entries - may be nil
+	mu         sync.RWMutex // protects the following
+	parent     *Dir         // parent, nil for root
+	path       string
+	entry      fs.Directory
+	read       time.Time         // time directory entry last read
+	items      map[string]Node   // directory entries - can be empty but not nil
+	virtual    map[string]vState // virtual directory entries - may be nil
+	generation uint64            // incremented whenever cached contents change
+	listing    *dirListing       // listing of the remote in progress - may be nil
 
 	modTimeMu sync.Mutex // protects the following
 	modTime   time.Time
 
 	_virtuals atomic.Int32 // number of virtual directory entries in this directory and children
+}
+
+// dirListing is a listing of the remote in progress for a Dir
+type dirListing struct {
+	done       chan struct{} // closed when the listing is finished
+	err        error         // error of the listing, set before done is closed
+	merged     bool          // set before done is closed if the listing was merged
+	generation uint64        // generation of the directory when the listing finished
 }
 
 //go:generate stringer -type=vState
@@ -84,6 +95,16 @@ func (d *Dir) cacheCleanup() {
 	when := time.Now()
 
 	d.mu.Lock()
+	if l := d.listing; l != nil {
+		// Forgetting the directory would discard the listing which is
+		// about to refresh it
+		d.mu.Unlock()
+		<-l.done
+		if l.merged {
+			return
+		}
+		d.mu.Lock()
+	}
 	_, stale := d._age(when)
 	d.mu.Unlock()
 
@@ -230,6 +251,7 @@ func (d *Dir) ForgetAll() (hasVirtual bool) {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.generation++
 
 	// Purge any unnecessary virtual entries
 	d._purgeVirtual()
@@ -266,6 +288,7 @@ func (d *Dir) invalidateDir(absPath string) {
 	node := d.vfs.root.cachedNode(absPath)
 	if dir, ok := node.(*Dir); ok {
 		dir.mu.Lock()
+		dir.generation++
 		if !dir.read.IsZero() {
 			fs.Debugf(dir.path, "invalidating directory cache")
 			dir.read = time.Time{}
@@ -363,6 +386,7 @@ func (d *Dir) _age(when time.Time) (age time.Duration, stale bool) {
 func (d *Dir) renameTree(dirPath string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.generation++
 
 	// Make sure the path is correct for each node
 	if d.path != dirPath {
@@ -522,22 +546,102 @@ func (d *Dir) DelVirtual(leaf string) {
 	d.delObject(leaf)
 }
 
+// maxListAttempts is the number of times _readDir lists a directory
+// without the lock held before listing it with the lock held because it
+// keeps changing during the listings
+const maxListAttempts = 3
+
 // read the directory and sets d.items - must be called with the lock held
+//
+// The lock is released while the remote is listed so that a slow listing
+// doesn't block the other users of the directory and of its parent. The
+// callers which need the directory listed meanwhile wait for that listing
+// and share its result. A listing during which the directory changed is
+// discarded.
 func (d *Dir) _readDir() error {
-	when := time.Now()
-	if age, stale := d._age(when); stale {
-		if age != 0 {
-			fs.Debugf(d.path, "Re-reading directory (%v old)", age)
+	for attempt := 1; ; attempt++ {
+		when := time.Now()
+		if age, stale := d._age(when); stale {
+			if age != 0 {
+				fs.Debugf(d.path, "Re-reading directory (%v old)", age)
+			}
+		} else {
+			return nil
 		}
-	} else {
-		return nil
+		if l := d.listing; l != nil {
+			d.mu.Unlock()
+			<-l.done
+			d.mu.Lock()
+			if l.err != nil {
+				return l.err
+			}
+			// The directory may have been forgotten since the merge
+			if l.merged && d.generation == l.generation {
+				return nil
+			}
+			continue
+		}
+		if attempt > maxListAttempts {
+			fs.Debugf(d.path, "Directory kept changing while listed - listing it with the lock held")
+			entries, err := d.listDir(d.vfs.ctx, d.f, d.path)
+			if err != nil {
+				return err
+			}
+			return d._setEntries(entries)
+		}
+		merged, err := d._listUnlocked()
+		if err != nil || merged {
+			return err
+		}
 	}
-	entries, err := list.DirSorted(d.vfs.ctx, d.f, false, d.path)
+}
+
+// _listUnlocked lists the directory with the lock released and merges the
+// listing if the directory didn't change meanwhile, which it reports in
+// merged - must be called with the lock held
+func (d *Dir) _listUnlocked() (merged bool, err error) {
+	l := &dirListing{done: make(chan struct{})}
+	d.listing = l
+	defer func() {
+		d.listing = nil
+		l.err, l.merged, l.generation = err, merged, d.generation
+		close(l.done)
+	}()
+	f, dirPath, generation := d.f, d.path, d.generation
+	entries, err := func() (fs.DirEntries, error) {
+		d.mu.Unlock()
+		defer d.mu.Lock()
+		return d.listDir(d.vfs.ctx, f, dirPath)
+	}()
+	if err != nil || d.path != dirPath || d.generation != generation {
+		return false, err
+	}
+	return true, d._setEntries(entries)
+}
+
+// _setEntries sets the directory contents from the listing entries and
+// marks the directory as read - must be called with the lock held
+func (d *Dir) _setEntries(entries fs.DirEntries) error {
+	err := d._readDirFromEntries(entries, nil, time.Time{})
+	if err != nil {
+		return err
+	}
+
+	d.read = time.Now()
+	d.cleanupTimer.Reset(time.Duration(d.vfs.Opt.DirCacheTime * 2))
+
+	return nil
+}
+
+// listDir reads and normalizes a single remote directory. It does not
+// require d.mu.
+func (d *Dir) listDir(ctx context.Context, f fs.Fs, dirPath string) (entries fs.DirEntries, err error) {
+	entries, err = list.DirSorted(ctx, f, false, dirPath)
 	if err == fs.ErrorDirNotFound {
 		// We treat directory not found as empty because we
 		// create directories on the fly
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 
 	if d.vfs.Opt.BlockNormDupes { // do this only if requested, as it will have a performance hit
@@ -569,15 +673,7 @@ func (d *Dir) _readDir() error {
 		entries = filteredEntries
 	}
 
-	err = d._readDirFromEntries(entries, nil, time.Time{})
-	if err != nil {
-		return err
-	}
-
-	d.read = time.Now()
-	d.cleanupTimer.Reset(time.Duration(d.vfs.Opt.DirCacheTime * 2))
-
-	return nil
+	return entries, nil
 }
 
 // update d.items for each dir in the DirTree below this one and
@@ -724,6 +820,7 @@ func (mv manageVirtuals) end(d *Dir) {
 // update d.items and if dirTree is not nil update each dir in the DirTree below this one and
 // set the last read time - must be called with the lock held
 func (d *Dir) _readDirFromEntries(entries fs.DirEntries, dirTree dirtree.DirTree, when time.Time) error {
+	d.generation++
 	var err error
 	mv := d._newManageVirtuals()
 	for _, entry := range entries {
@@ -810,6 +907,7 @@ func (d *Dir) readDirTree() error {
 func (d *Dir) readDir() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.generation++
 	d.read = time.Time{}
 	return d._readDir()
 }

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -856,4 +857,323 @@ func TestDirMetadataExtension(t *testing.T) {
 	if !errors.Is(err, fs.ErrorCantUploadEmptyFiles) {
 		require.NoError(t, err)
 	}
+}
+
+// listHookFs is an Fs which calls hook with the directory after each
+// listing, before returning it
+type listHookFs struct {
+	fs.Fs
+	mu    sync.Mutex
+	hook  func(dir string) error
+	lists map[string]int // number of listings of each directory
+}
+
+func (f *listHookFs) setHook(hook func(dir string) error) {
+	f.mu.Lock()
+	f.hook = hook
+	f.mu.Unlock()
+}
+
+func (f *listHookFs) listings(dir string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lists[dir]
+}
+
+func (f *listHookFs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
+	entries, err := f.Fs.List(ctx, dir)
+	f.mu.Lock()
+	f.lists[dir]++
+	hook := f.hook
+	f.mu.Unlock()
+	if err == nil && hook != nil {
+		err = hook(dir)
+	}
+	return entries, err
+}
+
+// newListHookVFS returns a VFS on the remote of r whose listings call the
+// hook of the listHookFs returned
+func newListHookVFS(t *testing.T, opt *vfscommon.Options) (r *fstest.Run, vfs *VFS, f *listHookFs) {
+	r = fstest.NewRun(t)
+	f = &listHookFs{Fs: r.Fremote, lists: map[string]int{}}
+	vfs = New(context.Background(), f, opt)
+	t.Cleanup(func() {
+		cleanupVFS(t, vfs)
+	})
+	return r, vfs, f
+}
+
+// blockListing makes the listings of dir wait, after reading the remote,
+// until release is called or the test ends, then fail with the error
+// passed to release. The channel returned is sent to when a listing starts
+// waiting.
+func blockListing(t *testing.T, f *listHookFs, dir string) (waiting <-chan struct{}, release func(err error)) {
+	ch := make(chan struct{}, 100)
+	released := make(chan struct{})
+	var (
+		once   sync.Once
+		relErr error
+	)
+	release = func(err error) {
+		once.Do(func() {
+			relErr = err
+			close(released)
+		})
+	}
+	// Registered after the VFS so that it runs before its cleanup
+	t.Cleanup(func() { release(nil) })
+	f.setHook(func(d string) error {
+		if d == dir {
+			ch <- struct{}{}
+			<-released
+			return relErr
+		}
+		return nil
+	})
+	return ch, release
+}
+
+// within fails the test if fn doesn't return within a second
+func within(t *testing.T, what string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("%s blocked by a directory listing in progress", what)
+	}
+}
+
+// Test a listing of the remote in progress doesn't block the users of
+// the directory being listed or of its parent
+func TestDirListingDoesNotBlock(t *testing.T) {
+	r, vfs, f := newListHookVFS(t, nil)
+	r.WriteObject(context.Background(), "dir/sub/file", "contents", t1)
+	node, err := vfs.Stat("dir")
+	require.NoError(t, err)
+	dir := node.(*Dir)
+	node, err = dir.Stat("sub")
+	require.NoError(t, err)
+	sub := node.(*Dir)
+
+	waiting, release := blockListing(t, f, "dir/sub")
+	listed := make(chan error, 1)
+	go func() {
+		_, err := sub.ReadDirAll()
+		listed <- err
+	}()
+	<-waiting
+
+	within(t, "Dir.Name", func() { assert.Equal(t, "sub", sub.Name()) })
+	within(t, "Dir.Path", func() { assert.Equal(t, "dir/sub", sub.Path()) })
+	within(t, "listing the parent", func() { assert.NoError(t, dir.readDir()) })
+
+	release(nil)
+	require.NoError(t, <-listed)
+	checkListing(t, sub, []string{"file,8,false"})
+}
+
+// Test the callers needing the same listing at the same time share it,
+// and its error
+func TestDirListingShared(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fail=%v", fail), func(t *testing.T) {
+			r, vfs, f := newListHookVFS(t, nil)
+			r.WriteObject(context.Background(), "dir/file", "contents", t1)
+			node, err := vfs.Stat("dir")
+			require.NoError(t, err)
+			dir := node.(*Dir)
+
+			waiting, release := blockListing(t, f, "dir")
+			const n = 5
+			errs := make(chan error, n)
+			for range n {
+				go func() {
+					_, err := dir.ReadDirAll()
+					errs <- err
+				}()
+			}
+			<-waiting
+			// Give the other callers time to find the listing in progress
+			time.Sleep(100 * time.Millisecond)
+			assert.Equal(t, 1, f.listings("dir"))
+
+			var listErr error
+			if fail {
+				listErr = errors.New("listing failed")
+			}
+			release(listErr)
+			for range n {
+				err := <-errs
+				if fail {
+					assert.ErrorIs(t, err, listErr)
+				} else {
+					assert.NoError(t, err)
+				}
+			}
+			assert.Equal(t, 1, f.listings("dir"))
+		})
+	}
+}
+
+// Test a listing which was in progress when the directory changed is
+// replaced by a new one rather than taken as up to date
+func TestDirListingInvalidated(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		invalidate func(vfs *VFS, dir *Dir)
+	}{
+		{"ChangeNotify", func(vfs *VFS, dir *Dir) { vfs.root.invalidateDir("dir") }},
+		{"Forget", func(vfs *VFS, dir *Dir) { dir.ForgetAll() }},
+		{"Refresh", func(vfs *VFS, dir *Dir) { assert.NoError(t, dir.readDir()) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r, vfs, f := newListHookVFS(t, nil)
+			r.WriteObject(context.Background(), "dir/file1", "contents", t1)
+			node, err := vfs.Stat("dir")
+			require.NoError(t, err)
+			dir := node.(*Dir)
+
+			waiting, release := blockListing(t, f, "dir")
+			listed := make(chan error, 1)
+			go func() {
+				_, err := dir.ReadDirAll()
+				listed <- err
+			}()
+			<-waiting
+
+			// The listing in progress was read before this file was added
+			r.WriteObject(context.Background(), "dir/file2", "contents", t2)
+			f.setHook(nil)
+			invalidated := make(chan struct{})
+			go func() {
+				test.invalidate(vfs, dir)
+				close(invalidated)
+			}()
+			select {
+			case <-invalidated:
+			case <-time.After(time.Second):
+				// The listing holds the directory, so let it finish
+			}
+			release(nil)
+			require.NoError(t, <-listed)
+			<-invalidated
+
+			names := []string{}
+			items, err := dir.ReadDirAll()
+			require.NoError(t, err)
+			for _, item := range items {
+				names = append(names, item.Name())
+			}
+			assert.Equal(t, []string{"file1", "file2"}, names)
+		})
+	}
+}
+
+// Test a directory renamed while it is listed is listed again at its
+// new path
+func TestDirListingRenamed(t *testing.T) {
+	r, vfs, f := newListHookVFS(t, nil)
+	if !operations.CanServerSideMove(r.Fremote) || r.Fremote.Features().DirMove == nil {
+		t.Skip("remote can't rename directories")
+	}
+	r.WriteObject(context.Background(), "dir/file", "contents", t1)
+	node, err := vfs.Stat("dir")
+	require.NoError(t, err)
+	dir := node.(*Dir)
+
+	waiting, release := blockListing(t, f, "dir")
+	listed := make(chan error, 1)
+	go func() {
+		_, err := dir.ReadDirAll()
+		listed <- err
+	}()
+	<-waiting
+
+	f.setHook(nil)
+	renamed := make(chan error, 1)
+	go func() { renamed <- vfs.Rename("dir", "dir2") }()
+	select {
+	case err := <-renamed:
+		require.NoError(t, err)
+		release(nil)
+	case <-time.After(time.Second):
+		release(nil)
+		require.NoError(t, <-renamed)
+	}
+	require.NoError(t, <-listed)
+	assert.Equal(t, "dir2", dir.Path())
+	checkListing(t, dir, []string{"file,8,false"})
+	assert.Equal(t, 1, f.listings("dir2"))
+}
+
+// Test callers of a directory which is never cached don't keep listing it
+// while others list it
+func TestDirListingNoCache(t *testing.T) {
+	opt := vfscommon.Opt
+	opt.DirCacheTime = 0
+	r, vfs, f := newListHookVFS(t, &opt)
+	r.WriteObject(context.Background(), "dir/file", "contents", t1)
+	node, err := vfs.Stat("dir")
+	require.NoError(t, err)
+	dir := node.(*Dir)
+	before := f.listings("dir")
+
+	const n = 5
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			checkListing(t, dir, []string{"file,8,false"})
+		})
+	}
+	wg.Wait()
+	// Each caller lists at most once, plus once more when the cleanup
+	// timer, which fires as soon as a listing is merged, forgets the
+	// directory during the next listing
+	assert.LessOrEqual(t, f.listings("dir")-before, 2*n)
+}
+
+// Test callers waiting for a listing see its contents even if the
+// directory is forgotten as the listing finishes
+func TestDirListingForgotten(t *testing.T) {
+	r, vfs, f := newListHookVFS(t, nil)
+	r.WriteObject(context.Background(), "dir/file", "contents", t1)
+	node, err := vfs.Stat("dir")
+	require.NoError(t, err)
+	dir := node.(*Dir)
+
+	waiting, release := blockListing(t, f, "dir")
+	const n = 5
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			checkListing(t, dir, []string{"file,8,false"})
+		})
+	}
+	<-waiting
+	// Give the other callers time to find the listing in progress
+	time.Sleep(100 * time.Millisecond)
+
+	stop := make(chan struct{})
+	forgot := make(chan struct{})
+	go func() {
+		defer close(forgot)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				dir.ForgetAll()
+			}
+		}
+	}()
+	release(nil)
+	wg.Wait()
+	close(stop)
+	<-forgot
 }

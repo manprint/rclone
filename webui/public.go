@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/url"
 	"path"
@@ -141,10 +142,14 @@ func (u *UI) servePublic(w http.ResponseWriter, r *http.Request, rest string) {
 		httpError(w, http.StatusInternalServerError, http.StatusText(http.StatusInternalServerError))
 		return
 	}
-	node, err := VFS.Stat(remote)
-	if err != nil {
+	node, err := u.lookups.stat(r.Context(), VFS, remote)
+	if errors.Is(err, vfs.ENOENT) {
 		fs.Debugf(remote, "webui: public link failed to stat: %v", err)
 		notFound()
+		return
+	}
+	if err != nil {
+		vfsError(w, remote, err)
 		return
 	}
 	if !u.allowed(remote) {
@@ -191,7 +196,7 @@ func (u *UI) servePublicFile(w http.ResponseWriter, r *http.Request, VFS *vfs.VF
 		}
 		u.writeData(w, r, remote, &data, false)
 	default:
-		serveFileRaw(w, r, VFS, remote)
+		u.serveFileRaw(w, r, VFS, remote)
 	}
 }
 
@@ -221,21 +226,24 @@ func (u *UI) servePublicDir(w http.ResponseWriter, r *http.Request, VFS *vfs.VFS
 		u.serveZip(w, r, VFS, remote, query)
 		return
 	}
-	entries, err := dir.ReadDirAll()
+	entries, err := u.lookups.readDir(r.Context(), dir)
 	if err != nil {
 		vfsError(w, remote, err)
 		return
 	}
+	nodes := make([]vfs.Node, 0, len(entries))
 	items := make([]PathItem, 0, len(entries))
 	for _, entry := range entries {
 		if !u.allowed(path.Join(remote, entry.Name())) {
 			continue
 		}
 		// Neither links nor playback positions are shown to the visitor
-		item := u.entryItem(VFS, entry, remote, true)
+		item := u.entryItem(VFS, entry, remote)
 		item.ResumePosition = nil
+		nodes = append(nodes, entry)
 		items = append(items, item)
 	}
+	u.fillDirCounts(r.Context(), nodes, items)
 	sortPathItems(items, query.Get("sort"), query.Get("order"), query.Has("sort"))
 	data := IndexData{
 		Href:         "/" + remote,

@@ -41,6 +41,7 @@ type UI struct {
 	resume     *resumeStore                    // playback positions, nil if they aren't remembered
 	publicWrap func(http.Handler) http.Handler // CORS and response headers for requests handled before authentication
 	keys       keys                            // signs download tokens and public links
+	lookups    lookups                         // VFS calls shared between requests
 }
 
 // New creates a web UI for the server described by cfg

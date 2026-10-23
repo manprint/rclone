@@ -22,7 +22,8 @@ d'uso è in [uso.md](uso.md), la build in [build.md](build.md), la CI in [ci-e-r
 | `webui/resume.go` | Posizioni di riproduzione (`?resume-get`, `?resume-save`, `?resume-clear`) |
 | `webui/token.go` | Chiavi derivate dal segreto, token di download (`?tokengen`, `?token`) |
 | `webui/public.go` | Link pubblici `@public` |
-| `webui/util.go` | Funzioni comuni: intestazione `Origin`, utente, percorsi di destinazione, errori |
+| `webui/util.go` | Funzioni comuni: intestazione `Origin`, utente, percorsi di destinazione, errori e loro codice HTTP |
+| `webui/lookup.go` | Stat ed elenchi della VFS condivisi tra richieste contemporanee e abbandonati quando la richiesta finisce |
 | `webui/assets/` | Asset di superdufs, byte per byte, e `SOURCE` (provenienza) |
 | `webui/overlay/overlay.js` | Le sole correzioni JavaScript del fork, caricate dopo `index.js` |
 | `webui/scripts/` | `check-footprint.sh`, `sync-assets.sh`, `sync-upstream.sh`, `smoke.sh`, `build.sh`, `gen-ci.py` |
@@ -179,5 +180,8 @@ e `golangci-lint run ./webui/... ./cmd/serve/webdav/...`.
 una cartella temporanea e verifica la pagina per i browser, l'elenco upstream per `curl`, le scritture con
 `Origin`, `?json`, `?zip`, il rifiuto del `MOVE` su una cartella esistente, i token, i link pubblici e
 l'assenza della pagina con `--webui=false`. Stampa `smoke OK` ed esce con `0`; richiede `curl` e `python3`.
+
+`webui/faulty_test.go` prova l'interfaccia con un remote che fallisce o non risponde (`faultyFs`, un `fs.Fs`
+che avvolge `local` e fa fallire o bloccare a comando elenchi, `NewObject` e `Put`).
 
 Gli script si controllano con `bash -n webui/scripts/*.sh` e `shellcheck webui/scripts/*.sh`.

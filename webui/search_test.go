@@ -32,7 +32,8 @@ func TestSearchLimits(t *testing.T) {
 		return item
 	}
 	run := func(ctx context.Context, needle string, maxDepth, maxResults int) (out []string) {
-		for _, item := range search(ctx, root, needle, maxDepth, maxResults, newItem) {
+		items, _ := search(ctx, &lookups{}, root, needle, maxDepth, maxResults, newItem)
+		for _, item := range items {
 			out = append(out, item.Name)
 		}
 		return out
@@ -67,7 +68,8 @@ func TestSearchLimits(t *testing.T) {
 	})
 
 	t.Run("Directories", func(t *testing.T) {
-		items := search(ctx, root, "b", 8, 100, newItem)
+		items, unread := search(ctx, &lookups{}, root, "b", 8, 100, newItem)
+		assert.Zero(t, unread)
 		require.Len(t, items, 1)
 		assert.Equal(t, PathItem{PathType: PathTypeDir, Name: "a/b"}, items[0])
 	})

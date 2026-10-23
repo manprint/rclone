@@ -46,6 +46,7 @@ type IndexData struct {
 	DiskUsage                     *int64     `json:"disk_usage"`
 	DiskTotal                     *int64     `json:"disk_total"`
 	DiskAvailable                 *int64     `json:"disk_available"`
+	SearchIncomplete              bool       `json:"search_incomplete,omitempty"` // some directories weren't searched
 }
 
 // EditData is the data embedded in the edit and view pages of a file

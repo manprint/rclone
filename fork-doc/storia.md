@@ -154,6 +154,23 @@ la precedente, e le immagini `1.75.2-webui.3`, `1.75`, `1` e `latest`: `latest` 
 `rclone v1.75.2-webui.3` e ha `--webui-allow-delete`. `lint` è rosso solo per i due `errcheck` upstream di
 `cmd/serve/rc.go` (§9).
 
+## 13. Remote lenti o irraggiungibili (B-A004)
+
+Un'analisi della fase di `serve` con remote che non rispondono (per esempio un upstream di `combine`) ha
+trovato nell'interfaccia sette punti deboli, corretti tutti in `webui/` su richiesta dell'utente.
+`--webui-allow-delete=false` lasciava passare una sovrascrittura quando il controllo di esistenza falliva
+per un errore del remote: ora la rifiuta, e lo stesso fa la guardia del `MOVE`. Uno zip interrotto a metà
+chiudeva la risposta come se fosse completo: ora interrompe la connessione. Gli errori del remote non
+passano più all'handler upstream, che ripeteva la stessa lettura, e danno `503`/`504` invece di `500`,
+`404` o `400`. La ricerca e il conteggio delle cartelle non aspettano più oltre il loro tempo una cartella
+che non risponde (la ricerca lo segnala con `search_incomplete`), e le letture uguali di richieste
+contemporanee sono condivise (`webui/lookup.go`). I test usano un backend che fallisce o si blocca a
+comando (`webui/faulty_test.go`).
+
+Restano i limiti della VFS upstream, documentati in
+[uso.md](uso.md#remote-lenti-o-irraggiungibili): la lettura di una cartella la tiene bloccata e non si
+interrompe, e il blocco risale alla cartella che la contiene, fino alla radice di un `combine`.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

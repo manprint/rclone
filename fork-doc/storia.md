@@ -183,6 +183,24 @@ anche l'attesa della risposta, quindi copie lato server e upload grandi conferma
 (Nextcloud, ownCloud) vogliono `5m`, altrimenti sono ripetuti da capo; i remote con rate limit vogliono
 10 tentativi; i file in attesa di upload non escono dalla cache.
 
+## 15. Backport da upstream e VFS senza blocco della cartella (T-A009)
+
+L'utente ha chiesto di correggere in rclone la cascata di blocchi della §13 e di portare nel fork anche
+correzioni upstream non ancora unite, senza perdere la sincronizzazione senza conflitti. Il fork ora
+porta queste correzioni come backport: un commit ciascuna con la sua patch in `webui/backports/`.
+`check-footprint.sh` confronta il fork con la base upstream con le patch applicate, e `sync-upstream.sh`
+toglie da sola una patch quando upstream la contiene identica; se upstream la unisce modificata, il
+merge dà conflitto su quei file e si tiene la versione upstream ([sviluppo.md](sviluppo.md#backport-da-upstream)).
+
+Il primo backport è una patch del fork per la VFS (`01-vfs-list-without-lock`), preparata su un ramo
+dalla base upstream e da proporre per rclone/rclone#9643 seguendo le indicazioni del maintainer in #9644:
+la cartella non resta bloccata mentre si legge il suo elenco, che si applica solo se la cartella non è
+cambiata nel frattempo (contatore di generazione, al più 3 tentativi, poi lettura col blocco come prima);
+chi ha bisogno della stessa cartella aspetta quella lettura e ne condivide risultato ed errore. Durante
+la revisione un test ha trovato che una cartella dimenticata proprio alla fine di una lettura dava elenchi
+vuoti a chi aspettava: corretto prima del commit. `TestParentPageWithHungChild` in `webui/faulty_test.go`
+verifica dall'interfaccia che la pagina della cartella genitore non aspetti più una sottocartella appesa.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

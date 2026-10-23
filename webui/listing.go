@@ -255,7 +255,8 @@ func (u *UI) fillDirCounts(ctx context.Context, nodes []vfs.Node, items []PathIt
 		g.Go(func() error {
 			children, err := u.lookups.readDir(ctx, dir)
 			if err != nil {
-				// Not dir.Path() which waits for a listing which hangs
+				// Not dir.Path(), which waits while the directory is
+				// listed with its lock held
 				fs.Debugf(items[i].Name, "webui: failed to count directory entries: %v", err)
 				return nil
 			}

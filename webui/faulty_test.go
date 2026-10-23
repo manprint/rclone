@@ -437,3 +437,23 @@ func TestDirCountBounded(t *testing.T) {
 	}
 	assert.Equal(t, map[string]int64{"a": 2, "b": -1, "c": 0}, sizes)
 }
+
+// Test a directory whose listing hangs doesn't hold up the page of the
+// directory which contains it
+func TestParentPageWithHungChild(t *testing.T) {
+	VFS, f, _ := newFaultyVFS(t, map[string]string{"d/a.txt": "a", "b.txt": "b"})
+	f.hangLists(t, "d")
+	h := newFaultyUI(t, VFS, Options{}).Handler(&fallthroughHandler{})
+
+	// Start the listing of d, which carries on after the request gives up
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/d/?json", nil).WithContext(ctx))
+	assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+
+	rec = doWithin(t, 2*time.Second, h, "GET", "/?json")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"name":"d"`)
+	assert.Contains(t, rec.Body.String(), `"name":"b.txt"`)
+}

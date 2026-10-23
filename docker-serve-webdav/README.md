@@ -295,9 +295,9 @@ Il server non ha retry propri: ogni richiesta al remote (elenco di una cartella,
 upload) è ripetuta fino a `RCLONE_LOW_LEVEL_RETRIES` volte, e ogni tentativo aspetta fino a
 `RCLONE_CONTIMEOUT` per collegarsi e fino a `RCLONE_TIMEOUT` di silenzio del remote. Un remote che rifiuta
 la connessione fallisce in pochi secondi; uno che non risponde tiene ferma l'operazione per tutti i
-tentativi. Mentre si legge l'elenco di una cartella, la VFS di rclone blocca quella cartella e, finché la
-lettura dura, anche l'elenco della cartella che la contiene: chi la apre, dall'interfaccia o da un client
-WebDAV, aspetta lo stesso tempo.
+tentativi. Mentre si legge l'elenco di una cartella, chi la apre, dall'interfaccia o da un client WebDAV,
+aspetta quella lettura e ne riceve il risultato; la cartella che la contiene e le altre restano
+utilizzabili.
 
 | Variabile | Flag | Default rclone | `.env.example` | Effetto |
 |-----------|------|----------------|----------------|---------|

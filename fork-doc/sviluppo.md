@@ -146,6 +146,7 @@ webui/scripts/check-footprint.sh
 
 | Patch | Correzione | Upstream |
 |-------|------------|----------|
+| `01-vfs-list-without-lock.patch` | La VFS legge l'elenco di una cartella senza tenerla bloccata: una lettura lenta o appesa non blocca più la cartella che la contiene (fino alla radice di un `combine`), e chi aspetta la stessa cartella condivide la lettura e il suo errore | Patch del fork per rclone/rclone#9643, sulla linea indicata in #9644; da proporre upstream. Citata in `uso.md` ("Limiti della VFS") |
 
 ### Con superdufs
 

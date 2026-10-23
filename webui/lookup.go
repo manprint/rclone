@@ -15,9 +15,7 @@ import (
 //
 // The VFS can't cancel a call, so one keeps running in the background
 // after all its requests gave up. A remote which hangs then costs one call
-// at a time rather than one per request, as the VFS would retry the
-// listing for each request queued on its directory. The zero value is
-// ready to use.
+// at a time rather than one per request. The zero value is ready to use.
 type lookups struct {
 	group singleflight.Group
 }

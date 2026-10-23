@@ -1,0 +1,607 @@
+From 8f2d3097562ed022431679c2e709609fd66392dd Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Fri, 23 Oct 2026 14:18:33 +0200
+Subject: [PATCH] vfs: fix a slow directory listing blocking the listing of its
+ parent
+
+The VFS held the lock of a directory while it listed the remote. As
+Dir.Name and Dir.Path take that lock, and listing the parent merges
+each child directory under the child's lock, a slow or hung listing of
+a directory also blocked the listings of its parents and every lookup
+through it, for as long as the remote took to fail. With combine, one
+unreachable upstream could block the root of the mount or of serve.
+
+_readDir now releases the lock while it lists the remote, along the
+lines discussed in #9644: a generation counter is incremented whenever
+the cached contents change, and a listing is merged only if the path
+and generation of the directory are unchanged, otherwise it is
+discarded and redone. After 3 discarded listings the directory is
+listed with the lock held, as before.
+
+Callers which need the directory while it is being listed wait for
+that listing and share its result. A failed listing is now reported
+once to all the callers waiting for it, rather than being redone by
+each of them in turn. The cache cleanup timer waits for a listing in
+progress rather than discarding it.
+
+See #9643 and #9644.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ vfs/dir.go      | 146 ++++++++++++++++++----
+ vfs/dir_test.go | 320 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 442 insertions(+), 24 deletions(-)
+
+diff --git a/vfs/dir.go b/vfs/dir.go
+index 111c0995b..0dee67519 100644
+--- a/vfs/dir.go
++++ b/vfs/dir.go
+@@ -1,6 +1,7 @@
+ package vfs
+ 
+ import (
++	"context"
+ 	"encoding/json"
+ 	"fmt"
+ 	"os"
+@@ -31,13 +32,15 @@ type Dir struct {
+ 	f            fs.Fs       // read only
+ 	cleanupTimer *time.Timer // read only: timer to call cacheCleanup
+ 
+-	mu      sync.RWMutex // protects the following
+-	parent  *Dir         // parent, nil for root
+-	path    string
+-	entry   fs.Directory
+-	read    time.Time         // time directory entry last read
+-	items   map[string]Node   // directory entries - can be empty but not nil
+-	virtual map[string]vState // virtual directory entries - may be nil
++	mu         sync.RWMutex // protects the following
++	parent     *Dir         // parent, nil for root
++	path       string
++	entry      fs.Directory
++	read       time.Time         // time directory entry last read
++	items      map[string]Node   // directory entries - can be empty but not nil
++	virtual    map[string]vState // virtual directory entries - may be nil
++	generation uint64            // incremented whenever cached contents change
++	listing    *dirListing       // listing of the remote in progress - may be nil
+ 
+ 	modTimeMu sync.Mutex // protects the following
+ 	modTime   time.Time
+@@ -45,6 +48,14 @@ type Dir struct {
+ 	_virtuals atomic.Int32 // number of virtual directory entries in this directory and children
+ }
+ 
++// dirListing is a listing of the remote in progress for a Dir
++type dirListing struct {
++	done       chan struct{} // closed when the listing is finished
++	err        error         // error of the listing, set before done is closed
++	merged     bool          // set before done is closed if the listing was merged
++	generation uint64        // generation of the directory when the listing finished
++}
++
+ //go:generate stringer -type=vState
+ 
+ // vState describes the state of the virtual directory entries
+@@ -84,6 +95,16 @@ func (d *Dir) cacheCleanup() {
+ 	when := time.Now()
+ 
+ 	d.mu.Lock()
++	if l := d.listing; l != nil {
++		// Forgetting the directory would discard the listing which is
++		// about to refresh it
++		d.mu.Unlock()
++		<-l.done
++		if l.merged {
++			return
++		}
++		d.mu.Lock()
++	}
+ 	_, stale := d._age(when)
+ 	d.mu.Unlock()
+ 
+@@ -230,6 +251,7 @@ func (d *Dir) ForgetAll() (hasVirtual bool) {
+ 
+ 	d.mu.Lock()
+ 	defer d.mu.Unlock()
++	d.generation++
+ 
+ 	// Purge any unnecessary virtual entries
+ 	d._purgeVirtual()
+@@ -266,6 +288,7 @@ func (d *Dir) invalidateDir(absPath string) {
+ 	node := d.vfs.root.cachedNode(absPath)
+ 	if dir, ok := node.(*Dir); ok {
+ 		dir.mu.Lock()
++		dir.generation++
+ 		if !dir.read.IsZero() {
+ 			fs.Debugf(dir.path, "invalidating directory cache")
+ 			dir.read = time.Time{}
+@@ -363,6 +386,7 @@ func (d *Dir) _age(when time.Time) (age time.Duration, stale bool) {
+ func (d *Dir) renameTree(dirPath string) {
+ 	d.mu.Lock()
+ 	defer d.mu.Unlock()
++	d.generation++
+ 
+ 	// Make sure the path is correct for each node
+ 	if d.path != dirPath {
+@@ -523,22 +547,102 @@ func (d *Dir) DelVirtual(leaf string) {
+ 	d.delObject(leaf)
+ }
+ 
++// maxListAttempts is the number of times _readDir lists a directory
++// without the lock held before listing it with the lock held because it
++// keeps changing during the listings
++const maxListAttempts = 3
++
+ // read the directory and sets d.items - must be called with the lock held
++//
++// The lock is released while the remote is listed so that a slow listing
++// doesn't block the other users of the directory and of its parent. The
++// callers which need the directory listed meanwhile wait for that listing
++// and share its result. A listing during which the directory changed is
++// discarded.
+ func (d *Dir) _readDir() error {
+-	when := time.Now()
+-	if age, stale := d._age(when); stale {
+-		if age != 0 {
+-			fs.Debugf(d.path, "Re-reading directory (%v old)", age)
++	for attempt := 1; ; attempt++ {
++		when := time.Now()
++		if age, stale := d._age(when); stale {
++			if age != 0 {
++				fs.Debugf(d.path, "Re-reading directory (%v old)", age)
++			}
++		} else {
++			return nil
++		}
++		if l := d.listing; l != nil {
++			d.mu.Unlock()
++			<-l.done
++			d.mu.Lock()
++			if l.err != nil {
++				return l.err
++			}
++			// The directory may have been forgotten since the merge
++			if l.merged && d.generation == l.generation {
++				return nil
++			}
++			continue
++		}
++		if attempt > maxListAttempts {
++			fs.Debugf(d.path, "Directory kept changing while listed - listing it with the lock held")
++			entries, err := d.listDir(d.vfs.ctx, d.f, d.path)
++			if err != nil {
++				return err
++			}
++			return d._setEntries(entries)
++		}
++		merged, err := d._listUnlocked()
++		if err != nil || merged {
++			return err
+ 		}
+-	} else {
+-		return nil
+ 	}
+-	entries, err := list.DirSorted(d.vfs.ctx, d.f, false, d.path)
++}
++
++// _listUnlocked lists the directory with the lock released and merges the
++// listing if the directory didn't change meanwhile, which it reports in
++// merged - must be called with the lock held
++func (d *Dir) _listUnlocked() (merged bool, err error) {
++	l := &dirListing{done: make(chan struct{})}
++	d.listing = l
++	defer func() {
++		d.listing = nil
++		l.err, l.merged, l.generation = err, merged, d.generation
++		close(l.done)
++	}()
++	f, dirPath, generation := d.f, d.path, d.generation
++	entries, err := func() (fs.DirEntries, error) {
++		d.mu.Unlock()
++		defer d.mu.Lock()
++		return d.listDir(d.vfs.ctx, f, dirPath)
++	}()
++	if err != nil || d.path != dirPath || d.generation != generation {
++		return false, err
++	}
++	return true, d._setEntries(entries)
++}
++
++// _setEntries sets the directory contents from the listing entries and
++// marks the directory as read - must be called with the lock held
++func (d *Dir) _setEntries(entries fs.DirEntries) error {
++	err := d._readDirFromEntries(entries, nil, time.Time{})
++	if err != nil {
++		return err
++	}
++
++	d.read = time.Now()
++	d.cleanupTimer.Reset(time.Duration(d.vfs.Opt.DirCacheTime * 2))
++
++	return nil
++}
++
++// listDir reads and normalizes a single remote directory. It does not
++// require d.mu.
++func (d *Dir) listDir(ctx context.Context, f fs.Fs, dirPath string) (entries fs.DirEntries, err error) {
++	entries, err = list.DirSorted(ctx, f, false, dirPath)
+ 	if err == fs.ErrorDirNotFound {
+ 		// We treat directory not found as empty because we
+ 		// create directories on the fly
+ 	} else if err != nil {
+-		return err
++		return nil, err
+ 	}
+ 
+ 	if d.vfs.Opt.BlockNormDupes { // do this only if requested, as it will have a performance hit
+@@ -570,15 +674,7 @@ func (d *Dir) _readDir() error {
+ 		entries = filteredEntries
+ 	}
+ 
+-	err = d._readDirFromEntries(entries, nil, time.Time{})
+-	if err != nil {
+-		return err
+-	}
+-
+-	d.read = time.Now()
+-	d.cleanupTimer.Reset(time.Duration(d.vfs.Opt.DirCacheTime * 2))
+-
+-	return nil
++	return entries, nil
+ }
+ 
+ // update d.items for each dir in the DirTree below this one and
+@@ -725,6 +821,7 @@ func (mv manageVirtuals) end(d *Dir) {
+ // update d.items and if dirTree is not nil update each dir in the DirTree below this one and
+ // set the last read time - must be called with the lock held
+ func (d *Dir) _readDirFromEntries(entries fs.DirEntries, dirTree dirtree.DirTree, when time.Time) error {
++	d.generation++
+ 	var err error
+ 	mv := d._newManageVirtuals()
+ 	for _, entry := range entries {
+@@ -811,6 +908,7 @@ func (d *Dir) readDirTree() error {
+ func (d *Dir) readDir() error {
+ 	d.mu.Lock()
+ 	defer d.mu.Unlock()
++	d.generation++
+ 	d.read = time.Time{}
+ 	return d._readDir()
+ }
+diff --git a/vfs/dir_test.go b/vfs/dir_test.go
+index 12fcc5dc0..7b5b66975 100644
+--- a/vfs/dir_test.go
++++ b/vfs/dir_test.go
+@@ -10,6 +10,7 @@ import (
+ 	"runtime"
+ 	"slices"
+ 	"sort"
++	"sync"
+ 	"testing"
+ 	"time"
+ 	"unsafe"
+@@ -902,3 +903,322 @@ func TestDirRenameParentEntries(t *testing.T) {
+ 
+ 	assert.Equal(t, before, slices.Sorted(maps.Keys(root.items)))
+ }
++
++// listHookFs is an Fs which calls hook with the directory after each
++// listing, before returning it
++type listHookFs struct {
++	fs.Fs
++	mu    sync.Mutex
++	hook  func(dir string) error
++	lists map[string]int // number of listings of each directory
++}
++
++func (f *listHookFs) setHook(hook func(dir string) error) {
++	f.mu.Lock()
++	f.hook = hook
++	f.mu.Unlock()
++}
++
++func (f *listHookFs) listings(dir string) int {
++	f.mu.Lock()
++	defer f.mu.Unlock()
++	return f.lists[dir]
++}
++
++func (f *listHookFs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
++	entries, err := f.Fs.List(ctx, dir)
++	f.mu.Lock()
++	f.lists[dir]++
++	hook := f.hook
++	f.mu.Unlock()
++	if err == nil && hook != nil {
++		err = hook(dir)
++	}
++	return entries, err
++}
++
++// newListHookVFS returns a VFS on the remote of r whose listings call the
++// hook of the listHookFs returned
++func newListHookVFS(t *testing.T, opt *vfscommon.Options) (r *fstest.Run, vfs *VFS, f *listHookFs) {
++	r = fstest.NewRun(t)
++	f = &listHookFs{Fs: r.Fremote, lists: map[string]int{}}
++	vfs = New(context.Background(), f, opt)
++	t.Cleanup(func() {
++		cleanupVFS(t, vfs)
++	})
++	return r, vfs, f
++}
++
++// blockListing makes the listings of dir wait, after reading the remote,
++// until release is called or the test ends, then fail with the error
++// passed to release. The channel returned is sent to when a listing starts
++// waiting.
++func blockListing(t *testing.T, f *listHookFs, dir string) (waiting <-chan struct{}, release func(err error)) {
++	ch := make(chan struct{}, 100)
++	released := make(chan struct{})
++	var (
++		once   sync.Once
++		relErr error
++	)
++	release = func(err error) {
++		once.Do(func() {
++			relErr = err
++			close(released)
++		})
++	}
++	// Registered after the VFS so that it runs before its cleanup
++	t.Cleanup(func() { release(nil) })
++	f.setHook(func(d string) error {
++		if d == dir {
++			ch <- struct{}{}
++			<-released
++			return relErr
++		}
++		return nil
++	})
++	return ch, release
++}
++
++// within fails the test if fn doesn't return within a second
++func within(t *testing.T, what string, fn func()) {
++	t.Helper()
++	done := make(chan struct{})
++	go func() {
++		fn()
++		close(done)
++	}()
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatalf("%s blocked by a directory listing in progress", what)
++	}
++}
++
++// Test a listing of the remote in progress doesn't block the users of
++// the directory being listed or of its parent
++func TestDirListingDoesNotBlock(t *testing.T) {
++	r, vfs, f := newListHookVFS(t, nil)
++	r.WriteObject(context.Background(), "dir/sub/file", "contents", t1)
++	node, err := vfs.Stat("dir")
++	require.NoError(t, err)
++	dir := node.(*Dir)
++	node, err = dir.Stat("sub")
++	require.NoError(t, err)
++	sub := node.(*Dir)
++
++	waiting, release := blockListing(t, f, "dir/sub")
++	listed := make(chan error, 1)
++	go func() {
++		_, err := sub.ReadDirAll()
++		listed <- err
++	}()
++	<-waiting
++
++	within(t, "Dir.Name", func() { assert.Equal(t, "sub", sub.Name()) })
++	within(t, "Dir.Path", func() { assert.Equal(t, "dir/sub", sub.Path()) })
++	within(t, "listing the parent", func() { assert.NoError(t, dir.readDir()) })
++
++	release(nil)
++	require.NoError(t, <-listed)
++	checkListing(t, sub, []string{"file,8,false"})
++}
++
++// Test the callers needing the same listing at the same time share it,
++// and its error
++func TestDirListingShared(t *testing.T) {
++	for _, fail := range []bool{false, true} {
++		t.Run(fmt.Sprintf("fail=%v", fail), func(t *testing.T) {
++			r, vfs, f := newListHookVFS(t, nil)
++			r.WriteObject(context.Background(), "dir/file", "contents", t1)
++			node, err := vfs.Stat("dir")
++			require.NoError(t, err)
++			dir := node.(*Dir)
++
++			waiting, release := blockListing(t, f, "dir")
++			const n = 5
++			errs := make(chan error, n)
++			for range n {
++				go func() {
++					_, err := dir.ReadDirAll()
++					errs <- err
++				}()
++			}
++			<-waiting
++			// Give the other callers time to find the listing in progress
++			time.Sleep(100 * time.Millisecond)
++			assert.Equal(t, 1, f.listings("dir"))
++
++			var listErr error
++			if fail {
++				listErr = errors.New("listing failed")
++			}
++			release(listErr)
++			for range n {
++				err := <-errs
++				if fail {
++					assert.ErrorIs(t, err, listErr)
++				} else {
++					assert.NoError(t, err)
++				}
++			}
++			assert.Equal(t, 1, f.listings("dir"))
++		})
++	}
++}
++
++// Test a listing which was in progress when the directory changed is
++// replaced by a new one rather than taken as up to date
++func TestDirListingInvalidated(t *testing.T) {
++	for _, test := range []struct {
++		name       string
++		invalidate func(vfs *VFS, dir *Dir)
++	}{
++		{"ChangeNotify", func(vfs *VFS, dir *Dir) { vfs.root.invalidateDir("dir") }},
++		{"Forget", func(vfs *VFS, dir *Dir) { dir.ForgetAll() }},
++		{"Refresh", func(vfs *VFS, dir *Dir) { assert.NoError(t, dir.readDir()) }},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			r, vfs, f := newListHookVFS(t, nil)
++			r.WriteObject(context.Background(), "dir/file1", "contents", t1)
++			node, err := vfs.Stat("dir")
++			require.NoError(t, err)
++			dir := node.(*Dir)
++
++			waiting, release := blockListing(t, f, "dir")
++			listed := make(chan error, 1)
++			go func() {
++				_, err := dir.ReadDirAll()
++				listed <- err
++			}()
++			<-waiting
++
++			// The listing in progress was read before this file was added
++			r.WriteObject(context.Background(), "dir/file2", "contents", t2)
++			f.setHook(nil)
++			invalidated := make(chan struct{})
++			go func() {
++				test.invalidate(vfs, dir)
++				close(invalidated)
++			}()
++			select {
++			case <-invalidated:
++			case <-time.After(time.Second):
++				// The listing holds the directory, so let it finish
++			}
++			release(nil)
++			require.NoError(t, <-listed)
++			<-invalidated
++
++			names := []string{}
++			items, err := dir.ReadDirAll()
++			require.NoError(t, err)
++			for _, item := range items {
++				names = append(names, item.Name())
++			}
++			assert.Equal(t, []string{"file1", "file2"}, names)
++		})
++	}
++}
++
++// Test a directory renamed while it is listed is listed again at its
++// new path
++func TestDirListingRenamed(t *testing.T) {
++	r, vfs, f := newListHookVFS(t, nil)
++	if !operations.CanServerSideMove(r.Fremote) || r.Fremote.Features().DirMove == nil {
++		t.Skip("remote can't rename directories")
++	}
++	r.WriteObject(context.Background(), "dir/file", "contents", t1)
++	node, err := vfs.Stat("dir")
++	require.NoError(t, err)
++	dir := node.(*Dir)
++
++	waiting, release := blockListing(t, f, "dir")
++	listed := make(chan error, 1)
++	go func() {
++		_, err := dir.ReadDirAll()
++		listed <- err
++	}()
++	<-waiting
++
++	f.setHook(nil)
++	renamed := make(chan error, 1)
++	go func() { renamed <- vfs.Rename("dir", "dir2") }()
++	select {
++	case err := <-renamed:
++		require.NoError(t, err)
++		release(nil)
++	case <-time.After(time.Second):
++		release(nil)
++		require.NoError(t, <-renamed)
++	}
++	require.NoError(t, <-listed)
++	assert.Equal(t, "dir2", dir.Path())
++	checkListing(t, dir, []string{"file,8,false"})
++	assert.Equal(t, 1, f.listings("dir2"))
++}
++
++// Test callers of a directory which is never cached don't keep listing it
++// while others list it
++func TestDirListingNoCache(t *testing.T) {
++	opt := vfscommon.Opt
++	opt.DirCacheTime = 0
++	r, vfs, f := newListHookVFS(t, &opt)
++	r.WriteObject(context.Background(), "dir/file", "contents", t1)
++	node, err := vfs.Stat("dir")
++	require.NoError(t, err)
++	dir := node.(*Dir)
++	before := f.listings("dir")
++
++	const n = 5
++	var wg sync.WaitGroup
++	for range n {
++		wg.Go(func() {
++			checkListing(t, dir, []string{"file,8,false"})
++		})
++	}
++	wg.Wait()
++	// Each caller lists at most once, plus once more when the cleanup
++	// timer, which fires as soon as a listing is merged, forgets the
++	// directory during the next listing
++	assert.LessOrEqual(t, f.listings("dir")-before, 2*n)
++}
++
++// Test callers waiting for a listing see its contents even if the
++// directory is forgotten as the listing finishes
++func TestDirListingForgotten(t *testing.T) {
++	r, vfs, f := newListHookVFS(t, nil)
++	r.WriteObject(context.Background(), "dir/file", "contents", t1)
++	node, err := vfs.Stat("dir")
++	require.NoError(t, err)
++	dir := node.(*Dir)
++
++	waiting, release := blockListing(t, f, "dir")
++	const n = 5
++	var wg sync.WaitGroup
++	for range n {
++		wg.Go(func() {
++			checkListing(t, dir, []string{"file,8,false"})
++		})
++	}
++	<-waiting
++	// Give the other callers time to find the listing in progress
++	time.Sleep(100 * time.Millisecond)
++
++	stop := make(chan struct{})
++	forgot := make(chan struct{})
++	go func() {
++		defer close(forgot)
++		for {
++			select {
++			case <-stop:
++				return
++			default:
++				dir.ForgetAll()
++			}
++		}
++	}()
++	release(nil)
++	wg.Wait()
++	close(stop)
++	<-forgot
++}
+-- 
+2.43.0
+

@@ -89,19 +89,19 @@ segue il prefisso di directory upstream per i propri commit di unità).
 
 ## 1. Current unit and scope
 
-- Active scope: task T-A008 — profilo per remote lenti o irraggiungibili (richiesta utente: "documenta bene questa cosa e proponili come default" sui flag `--contimeout`, `--timeout`, `--low-level-retries`, `--dir-cache-time`, `--vfs-cache-mode`).
+- Active scope: task T-A009 — backport da upstream e VFS senza blocco della cartella (richieste utente: "si prepara la patch e falla" sulla cascata di blocchi della VFS; "puoi procedere su tutti e tre i punti": commit del profilo, patch VFS nel fork, categoria backport).
 - Scope result: COMPLETE
 - Type: task
-- ID / attempt: T-A008 / 1
-- Status: CLOSED (unit:T-A008:1)
-- Intent: proporre in `docker-serve-webdav` valori che facciano fallire prima le operazioni su un remote che non risponde, documentando compromessi e log, senza cambiare i default di rclone.
+- ID / attempt: T-A009 / 1
+- Status: CLOSED (unit:T-A009:1)
+- Intent: portare nel fork correzioni upstream non ancora unite senza perdere la sincronizzazione con upstream, e togliere la cascata di blocchi della VFS con un remote che non risponde.
 - Assigned: Opus (agent-1)
-- Mini-plan: S1 verifica del significato dei flag nel codice (`fs/fshttp`: `--timeout` è anche `ResponseHeaderTimeout`, `--contimeout` anche `TLSHandshakeTimeout`; writeback: retry senza limite, attesa massima 5m; elementi dirty non rimossi dalla cache); S2 `.env.example` sezione 6; S3 README e `uso.md`; S4 `docker compose config` e lettura dei flag da env.
-- Done: S1–S4.
+- Mini-plan: S1 patch VFS su ramo `vfs-list-without-lock` dalla base upstream, test prima della correzione (`TestDirListing*`); S2 correzione e revisione (attese condivise, generazione, `cacheCleanup`); S3 `check-footprint.sh` con base + patch in indice temporaneo, `sync-upstream.sh` con pulizia dei backport assorbiti; S4 backport nel fork con patch e `TestParentPageWithHungChild`; S5 documentazione.
+- Done: S1–S5; ramo `vfs-list-without-lock` (`d1906e427`) non pushato, patch non ancora proposta upstream.
 - Current step: none
 - Next action: none
 - Next eligible plan unit: none
-- Unit base: 3f7431945; branch: main; owned changes: `docker-serve-webdav/.env.example`, `docker-serve-webdav/README.md`, `fork-doc/uso.md`, `fork-doc/storia.md`, STATE
+- Unit base: 4538a7fa8; branch: main; owned changes: `webui/scripts/check-footprint.sh`, `webui/scripts/sync-upstream.sh`, `webui/backports/01-vfs-list-without-lock.patch`, `vfs/dir.go`, `vfs/dir_test.go` (backport), `webui/{lookup.go,listing.go,faulty_test.go}`, `fork-doc/{README.md,sviluppo.md,ci-e-release.md,uso.md,storia.md}`, `docker-serve-webdav/README.md`, STATE
 - Repo state: pulito salvo `.serena/`
 
 ## 2. Feature context and readiness
@@ -257,6 +257,7 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 | task | T-A007 / 1 | 1 | Opus (agent-1) | `webui/options.go`: `webui_allow_delete` (default `true`); `webui/write.go`: `statRemote` (VFS, poi `Fs().NewObject`), `refuseDelete` (403 a `DELETE`, `MOVE`, `PUT` su file non vuoto, `COPY` su destinazione esistente senza `Overwrite: F`), `forbid`; `webui/ui.go`: `refuseDelete` per primo in `Handler`; `listing.go`/`edit.go`: `allow_delete` = `!ReadOnly && AllowDelete`, `?edit` di un file non vuoto servito come `View` solo con il flag spento (non con il solo `--read-only`); glue: avviso `--webui-allow-delete=false is ignored` quando l'interfaccia è spenta; `TestWebUIAllowDeleteOff` (8 sottotest), flag in `TestWebUIFlagsRegistered`, `Kind` `Edit` con il solo `--read-only` in `TestWebUIEditPage`; documentazione | §7 (T-A007) | unit:T-A007:1 |
 | bug | B-A004 / 1 | 1 | Opus (agent-1) | NEW `webui/lookup.go` (`lookups`: stat ed elenchi della VFS condivisi con `singleflight` per chiave VFS+percorso/cartella, abbandonati con il contesto della richiesta, panic → errore con `vfscommon.RecoverCall`); `write.go`: `statRemote` restituisce l'errore (non trovato solo `ENOENT`, `ErrorObjectNotFound`, `ErrorDirNotFound`; `ErrorIsDir` = cartella), `refuseDelete` e `guardMove` rifiutano ciò che non si può controllare, `copyBody` distingue client e backend (`uploadIncomplete`); `zip.go`: `panic(http.ErrAbortHandler)` dopo l'inizio del body; `util.go`: `errStatus` 504 su `DeadlineExceeded`, 503 su `Canceled`/`IsRetryError`/`ShouldRetry`, `vfsError` non logga i `Canceled`; `listing.go`/`edit.go`/`token.go`/`public.go`/`resume.go`/`files.go`: `lookups.stat`/`readDir`, errore del remote risposto e non passato a `next`; `search.go`: `unread`, `search_incomplete` in `IndexData`, log info; `listing.go`: `fillDirCounts` (errgroup con `--checkers`, `dirCountTimeout` 5s) al posto di `dirSize`; log senza `Dir.Path()`, che aspetta una lettura bloccata; NEW `webui/faulty_test.go` (`faultyFs`, 8 test); documentazione | §7 (B-A004) | unit:B-A004:1 |
 | task | T-A008 / 1 | 1 | Opus (agent-1) | `.env.example`: sezione 6 (`RCLONE_CONTIMEOUT=15s`, `RCLONE_TIMEOUT=1m`, `RCLONE_LOW_LEVEL_RETRIES=5`, `RCLONE_DISABLE_HTTP2` commentata), sezioni 7-8 rinumerate; README: sezione "Remote lenti o irraggiungibili" (tabelle dei flag e dei tempi, quando alzarli, righe di log) e 4 righe in "Problemi frequenti"; `uso.md`: "Profilo consigliato", sottosezioni "Risposte dell'interfaccia" e "Limiti della VFS"; `storia.md` §14 | §7 (T-A008) | unit:T-A008:1 |
+| task | T-A009 / 1 | 1 | Opus (agent-1) | `check-footprint.sh`: confronto con `read-tree` della merge-base + `git apply --cached` delle patch in ordine, errore se una patch non si applica o due toccano lo stesso file; `sync-upstream.sh`: dopo il merge `git rm` + commit delle patch che si annullano all'indietro su `$REF`, sui conflitti il nome del backport che tocca ogni file; backport VFS: `Dir.generation`, `Dir.listing`/`dirListing` (attesa condivisa, `merged`, generazione alla fine), `_readDir` a tentativi (3, poi lettura col blocco), `_listUnlocked`, `_setEntries`, `listDir`, `cacheCleanup` aspetta la lettura in corso, 8 test `TestDirListing*`; `TestParentPageWithHungChild`; commenti di `lookup.go`/`listing.go`; documentazione | §7 (T-A009) | unit:T-A009:1 |
 
 ## 5. Files and ownership
 
@@ -268,12 +269,13 @@ A SHA recorded by a later update is optional. Older valid SHA references remain 
 
 ## 6. In-flight checkpoint
 
-none — T-A008 chiusa (unit:T-A008:1).
+none — T-A009 chiusa (unit:T-A009:1).
 
 ## 7. Verification and reviews
 
 | Gate/test | Command | Result | Test count/named evidence | Tested revision/diff | When |
 |-----------|---------|--------|--------------------------|---------------------|------|
+| backport e VFS senza blocco (T-A009) | ramo: `go test -race -run TestDirListing ./vfs/` prima e dopo, `-count=50`; `go test -race ./vfs/... ./cmd/serve/... ./cmd/mount/...`; `golangci-lint run ./vfs/...`; base `81e7372f6`: `go test -count=15 -race ./cmd/mountlib/`; fork: `check-footprint.sh` con il backport, con `vfs/dir.go` toccato a mano e senza patch; `go test -race ./webui/... ./cmd/serve/webdav/ ./vfs/... ./lib/http/...`; `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`; `TestParentPageWithHungChild` senza la correzione in `vfs/dir.go`; `golangci-lint`; `shellcheck`; `smoke.sh` | pass | prima: FAIL `TestDirListingDoesNotBlock` (Name bloccato), `TestDirListingShared/fail=true` (5 elenchi), `TestDirListingForgotten` 11/30; dopo: 50/50 PASS; suite ok, lint 0; `TestRc*`/`TestVFSNew` falliscono con `-count>1` anche sulla base, la race di `mountRc` c'è anche sulla base (2 su 15); footprint OK, FAIL `vfs/dir.go` modificato a mano, FAIL senza patch; webui ok, `TestParentPageWithHungChild` FAIL senza correzione (`still running after 2s`), PASS con; lint 0, shellcheck ok, `smoke OK` | working tree T-A009 | 2026-10-23 |
 | profilo remote lenti (T-A008) | `docker compose config` con `.env.example` come `.env`; `RCLONE_CONTIMEOUT=15s RCLONE_TIMEOUT=1m RCLONE_LOW_LEVEL_RETRIES=5 go run . -vv lsd`; `go run . help flags`; `check-footprint.sh` | pass | compose: le tre variabili nell'ambiente del servizio; rclone: `Setting --contimeout "15s"`, `--timeout "1m0s"`, `--low-level-retries "5"` da env; `--disable-http2` esiste; `footprint OK` | working tree T-A008 | 2026-10-23 |
 | remote lenti o irraggiungibili (B-A004) | `go test -run 'TestErrStatusRemote\|TestRefuseDeleteFailsClosed\|TestZipAbortsOnFailure\|TestNoFallthroughOnRemoteError\|TestUploadBackendFailure\|TestHungRemoteSharedLookup\|TestSearchBoundedByTimeout\|TestDirCountBounded' ./webui/` prima e dopo; zip senza abort; `go test -race ./webui/ ./cmd/serve/webdav/`; `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`; `go test ./lib/http/...`; `golangci-lint run ./webui/... ./cmd/serve/webdav/...`; `check-footprint.sh`; `smoke.sh`; test temporanei della cascata | pass | prima: tutti FAIL (418/404/400/500 al posto di 503/504, zip letto senza errore, richieste ferme 5s); dopo: tutti PASS; senza `panic(http.ErrAbortHandler)` → FAIL `TestZipAbortsOnFailure`; race ok, suite upstream ok con e senza UI, lint 0 issue, `footprint OK`, `smoke OK`; temporanei: `Name()` della radice bloccato da un elenco appeso di un figlio, seconda pagina con `--webui-dir-count` ferma | working tree B-A004 | 2026-10-23 |
 | release `v1.75.2-webui.3` | ramo `v1.75-webui` (`0ac086ea8`): `UPSTREAM_REF=v1.75.2 check-footprint.sh`, `go build ./...`, test con e senza UI, `golangci-lint` sui percorsi del fork; run `39817366129` e `39817365986`; `docker run ghcr.io/manprint/rclone:latest` | pass | footprint OK, test ok, lint 0 issue; release 51 file, immagini pubblicate; run del tag rosso solo su `lint` per i 2 `errcheck` upstream di `cmd/serve/rc.go`; `latest` = `rclone v1.75.2-webui.3` con `--webui-allow-delete` | `0ac086ea8` | 2026-10-22 |

@@ -1,0 +1,266 @@
+From 72a3d9074435b03701c901a24a5c553ead75ada8 Mon Sep 17 00:00:00 2001
+From: Nick Sweeting <git@sweeting.me>
+Date: Fri, 23 Oct 2026 15:04:32 +0200
+Subject: [PATCH] task(T-A010): chunkedreader: report premature source EOF as
+ an error (backport)
+
+Backport of rclone/rclone#10127 (head 81d57d9298bd), carried as
+webui/backports/04-pr10127.patch until upstream merges it.
+
+Upstream commit message:
+
+chunkedreader: report premature source EOF as an error
+chunkedreader: detect truncation across reopened chunks
+
+chunkedreader: simplify premature EOF detection
+
+PEV-Plan: 001_plan-WebdavSuperUI
+PEV-Unit: T-A010
+PEV-Attempt: 1
+PEV-Result: pass
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmd/serve/http/http_test.go              |  33 ++++++
+ fs/chunkedreader/sequential.go           |  13 ++-
+ fs/chunkedreader/sequential_real_test.go | 131 +++++++++++++++++++++++
+ 3 files changed, 176 insertions(+), 1 deletion(-)
+ create mode 100644 fs/chunkedreader/sequential_real_test.go
+
+diff --git a/cmd/serve/http/http_test.go b/cmd/serve/http/http_test.go
+index 8d6f2a50f..034366bab 100644
+--- a/cmd/serve/http/http_test.go
++++ b/cmd/serve/http/http_test.go
+@@ -15,10 +15,13 @@ import (
+ 	"testing"
+ 	"time"
+ 
++	httpbackend "github.com/rclone/rclone/backend/http"
+ 	_ "github.com/rclone/rclone/backend/local"
+ 	"github.com/rclone/rclone/cmd/serve/proxy"
+ 	"github.com/rclone/rclone/cmd/serve/servetest"
+ 	"github.com/rclone/rclone/fs"
++	"github.com/rclone/rclone/fs/chunkedreader"
++	"github.com/rclone/rclone/fs/config/configmap"
+ 	"github.com/rclone/rclone/fs/filter"
+ 	"github.com/rclone/rclone/fs/rc"
+ 	libhttp "github.com/rclone/rclone/lib/http"
+@@ -597,3 +600,33 @@ func TestAuthProxyDownloadOutlivesCache(t *testing.T) {
+ 	require.NoError(t, err)
+ 	assert.True(t, contents == string(start)+string(rest), "download corrupted")
+ }
++
++func TestSequentialUnknownSizeZIP(t *testing.T) {
++	ctx := context.Background()
++	dir := t.TempDir()
++	// A large ZIP is streamed without Content-Length, even after Open.
++	payload := random.String(65536)
++	require.NoError(t, os.WriteFile(filepath.Join(dir, "payload"), []byte(payload), 0600))
++	local, err := fs.NewFs(ctx, dir)
++	require.NoError(t, err)
++	s, testURL := start(ctx, t, local)
++	t.Cleanup(func() { assert.NoError(t, s.Shutdown()) })
++	f, err := httpbackend.NewFs(ctx, "test", "", configmap.Simple{
++		"url":       strings.Replace(testURL, "://", "://"+testUser+":"+testPass+"@", 1),
++		"no_escape": "true",
++	})
++	require.NoError(t, err)
++	obj, err := f.NewObject(ctx, "?download=zip")
++	require.NoError(t, err)
++	require.Equal(t, int64(-1), obj.Size())
++	reader := chunkedreader.New(ctx, obj, -1, -1, 0)
++	_, err = reader.Open()
++	require.NoError(t, err)
++	t.Cleanup(func() { assert.NoError(t, reader.Close()) })
++	require.Equal(t, int64(-1), obj.Size())
++	data, err := io.ReadAll(reader)
++	require.NoError(t, err)
++	entries := readZip(t, data)
++	require.Len(t, entries, 1)
++	require.Equal(t, payload, entries["payload"].Contents)
++}
+diff --git a/fs/chunkedreader/sequential.go b/fs/chunkedreader/sequential.go
+index ee9400fb4..0fe5441d3 100644
+--- a/fs/chunkedreader/sequential.go
++++ b/fs/chunkedreader/sequential.go
+@@ -17,6 +17,7 @@ type sequential struct {
+ 	ctx              context.Context
+ 	mu               sync.Mutex    // protects following fields
+ 	o                fs.Object     // source to read from
++	expectedSize     int64         // fixed once known: reopening chunks can refresh o.Size and hide truncation
+ 	rc               io.ReadCloser // reader for the current open chunk
+ 	offset           int64         // offset the next Read will start. -1 forces a reopen of o
+ 	chunkOffset      int64         // beginning of the current or next chunk
+@@ -32,6 +33,7 @@ func newSequential(ctx context.Context, o fs.Object, initialChunkSize int64, max
+ 	return &sequential{
+ 		ctx:              ctx,
+ 		o:                o,
++		expectedSize:     o.Size(),
+ 		offset:           -1,
+ 		chunkSize:        initialChunkSize,
+ 		initialChunkSize: initialChunkSize,
+@@ -89,8 +91,13 @@ func (cr *sequential) Read(p []byte) (n int, err error) {
+ 		n += rn
+ 		cr.offset += int64(rn)
+ 		if err != nil {
+-			if err == io.ErrUnexpectedEOF {
++			if err == io.EOF || err == io.ErrUnexpectedEOF {
++				// ReadFull also reports healthy short final chunks as unexpected EOF.
++				// An unknown (negative) size cannot prove that bytes are missing.
+ 				err = io.EOF
++				if cr.offset < cr.expectedSize {
++					err = io.ErrUnexpectedEOF
++				}
+ 			}
+ 			return
+ 		}
+@@ -211,6 +218,10 @@ func (cr *sequential) openRange() error {
+ 	if err != nil {
+ 		return err
+ 	}
++	// Capture sizes learned on Open before another chunk can refresh them.
++	if cr.expectedSize < 0 {
++		cr.expectedSize = cr.o.Size()
++	}
+ 	return cr.resetReader(rc, offset)
+ }
+ 
+diff --git a/fs/chunkedreader/sequential_real_test.go b/fs/chunkedreader/sequential_real_test.go
+new file mode 100644
+index 000000000..2ec7e60f0
+--- /dev/null
++++ b/fs/chunkedreader/sequential_real_test.go
+@@ -0,0 +1,131 @@
++package chunkedreader_test
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"math/rand"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++
++	httpbackend "github.com/rclone/rclone/backend/http"
++	_ "github.com/rclone/rclone/backend/local"
++	"github.com/rclone/rclone/fs"
++	"github.com/rclone/rclone/fs/chunkedreader"
++	"github.com/rclone/rclone/fs/config/configmap"
++	"github.com/rclone/rclone/lib/random"
++	"github.com/stretchr/testify/require"
++)
++
++func TestSequentialRealFileEOF(t *testing.T) {
++	for _, tc := range []struct {
++		name                            string
++		size, offset, remaining, length int
++		truncate                        bool
++	}{
++		{name: "empty", size: 0},
++		{name: "short-final-chunk", size: 1500},
++		{name: "exact-chunk", size: 1024},
++		{name: "multiple-chunks", size: 3073},
++		{name: "seek", size: 3073, offset: 513},
++		{name: "range-first-chunk", size: 1500, offset: 127, length: 31},
++		{name: "range-exact-end", size: 1500, offset: 1470, length: 30},
++		{name: "range-past-end", size: 1500, offset: 1470, length: 64},
++		{name: "premature-first-boundary", size: 4096, truncate: true, remaining: 1024},
++		{name: "premature-second-chunk", size: 4096, truncate: true, remaining: 1200},
++		{name: "premature-second-boundary", size: 4096, truncate: true, remaining: 3072},
++		{name: "premature-third-chunk", size: 8192, truncate: true, remaining: 4096},
++		{name: "premature-seek-boundary", size: 4096, offset: 100, truncate: true, remaining: 1124},
++		{name: "premature-range-boundary", size: 4096, offset: 100, length: 31, truncate: true, remaining: 131},
++		{name: "premature-after-range", size: 4096, offset: 100, length: 31, truncate: true, remaining: 1200},
++		{name: "premature-zero", size: 1500, truncate: true, remaining: 0},
++		{name: "premature-partial", size: 1500, truncate: true, remaining: 127},
++		{name: "premature-after-seek", size: 1500, offset: 100, truncate: true, remaining: 227},
++		{name: "premature-short-range", size: 1500, offset: 100, length: 31, truncate: true, remaining: 127},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			ctx := context.Background()
++			dir := t.TempDir()
++			payload := []byte(random.StringFn(tc.size, rand.New(rand.NewSource(42))))
++			path := filepath.Join(dir, "payload")
++			require.NoError(t, os.WriteFile(path, payload, 0600))
++			f, err := fs.NewFs(ctx, dir)
++			require.NoError(t, err)
++			obj, err := f.NewObject(ctx, "payload")
++			require.NoError(t, err)
++			reader := chunkedreader.New(ctx, obj, 1024, 4096, 0)
++			t.Cleanup(func() { require.NoError(t, reader.Close()) })
++			if tc.length > 0 {
++				offset, err := reader.RangeSeek(ctx, int64(tc.offset), io.SeekStart, int64(tc.length))
++				require.NoError(t, err)
++				require.Equal(t, int64(tc.offset), offset)
++			} else if tc.offset != 0 {
++				offset, err := reader.Seek(int64(tc.offset), io.SeekStart)
++				require.NoError(t, err)
++				require.Equal(t, int64(tc.offset), offset)
++			}
++			_, err = reader.Open()
++			require.NoError(t, err)
++			// Truncate after opening so metadata initially advertises the full size.
++			if tc.truncate {
++				require.NoError(t, os.Truncate(path, int64(tc.remaining)))
++			}
++			actual, err := io.ReadAll(reader)
++			end := tc.size
++			if tc.truncate {
++				end = tc.remaining
++				require.ErrorIs(t, err, io.ErrUnexpectedEOF)
++			} else {
++				require.NoError(t, err)
++			}
++			require.Equal(t, payload[tc.offset:end], actual)
++		})
++	}
++}
++
++func TestSequentialHTTPSizeRefresh(t *testing.T) {
++	for _, noHead := range []string{"false", "true"} {
++		t.Run("no-head="+noHead, func(t *testing.T) {
++			ctx := context.Background()
++			dir := t.TempDir()
++			payload := []byte(random.StringFn(4096, rand.New(rand.NewSource(42))))
++			path := filepath.Join(dir, "payload")
++			require.NoError(t, os.WriteFile(path, payload, 0600))
++			server := httptest.NewServer(http.FileServer(http.Dir(dir)))
++			t.Cleanup(server.Close)
++			f, err := httpbackend.NewFs(ctx, "test", "", configmap.Simple{
++				"url": server.URL + "/", "no_head": noHead,
++			})
++			require.NoError(t, err)
++			obj, err := f.NewObject(ctx, "payload")
++			require.NoError(t, err)
++			if noHead == "true" {
++				require.Equal(t, int64(-1), obj.Size())
++			} else {
++				require.Equal(t, int64(len(payload)), obj.Size())
++			}
++			reader := chunkedreader.New(ctx, obj, 1024, 4096, 0)
++			_, err = reader.Open()
++			require.NoError(t, err)
++			t.Cleanup(func() { require.NoError(t, reader.Close()) })
++			require.Equal(t, int64(len(payload)), obj.Size())
++			first := make([]byte, 1024)
++			_, err = io.ReadFull(reader, first)
++			require.NoError(t, err)
++			require.Equal(t, payload[:1024], first)
++
++			// The next real range response advertises a smaller total size;
++			// it must not erase the length learned from HEAD or the first GET.
++			require.NoError(t, os.Truncate(path, 1200))
++			var rest bytes.Buffer
++			n, err := io.Copy(&rest, reader)
++			require.ErrorIs(t, err, io.ErrUnexpectedEOF)
++			require.Equal(t, int64(176), n)
++			require.Equal(t, payload[1024:1200], rest.Bytes())
++			require.Equal(t, int64(1200), obj.Size())
++		})
++	}
++}
+-- 
+2.43.0
+

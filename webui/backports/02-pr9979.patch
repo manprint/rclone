@@ -1,0 +1,101 @@
+From c61ba77a3036679bdbaa7026477d4f6b0253a038 Mon Sep 17 00:00:00 2001
+From: Neil Cawse <8085959+neilcawse@users.noreply.github.com>
+Date: Fri, 23 Oct 2026 15:04:31 +0200
+Subject: [PATCH] task(T-A010): vfs: fix uploads never starting while a dirty
+ file keeps being read (backport)
+
+Backport of rclone/rclone#9979 (head 1de70ee80c06), carried as
+webui/backports/02-pr9979.patch until upstream merges it.
+
+Upstream commit message:
+
+vfs: fix uploads never starting while a dirty file keeps being read
+
+Every close of a dirty cache item re-adds it to the writeback queue,
+and WriteBack.Add reset the upload timer even when the file had not
+been modified since it was last queued. A file which is opened and
+closed more often than --vfs-write-back - for example a git object
+that another process keeps reading - therefore never got uploaded
+while the reads continued.
+
+Before this change, with --vfs-write-back 2s, a file reread every
+0.5s through a mount was still not uploaded after 12s of reads. After
+it the file is uploaded after 2.6s, while the reads carry on.
+
+This only moves the timer on when the item has been modified, which
+was already the condition for cancelling an upload in progress. An
+unmodified re-add now also leaves the retry backoff of a failed
+upload alone.
+
+PEV-Plan: 001_plan-WebdavSuperUI
+PEV-Unit: T-A010
+PEV-Attempt: 1
+PEV-Result: pass
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ vfs/vfscache/writeback/writeback.go      |  8 ++++----
+ vfs/vfscache/writeback/writeback_test.go | 22 ++++++++++++++++++++++
+ 2 files changed, 26 insertions(+), 4 deletions(-)
+
+diff --git a/vfs/vfscache/writeback/writeback.go b/vfs/vfscache/writeback/writeback.go
+index 3e3575158..5a1d6b4fd 100644
+--- a/vfs/vfscache/writeback/writeback.go
++++ b/vfs/vfscache/writeback/writeback.go
+@@ -254,8 +254,8 @@ func (wb *WriteBack) SetID(pid *Handle) {
+ //
+ // Use SetID to create Handles in advance of calling Add.
+ //
+-// If modified is false then it doesn't cancel a pending upload if
+-// there is one as there is no need.
++// If modified is false then it neither cancels an upload in progress
++// nor delays a pending one, as the data to upload hasn't changed.
+ func (wb *WriteBack) Add(id Handle, name string, size int64, modified bool, putFn PutFn) Handle {
+ 	wb.mu.Lock()
+ 	defer wb.mu.Unlock()
+@@ -263,8 +263,8 @@ func (wb *WriteBack) Add(id Handle, name string, size int64, modified bool, putF
+ 	wbItem, ok := wb.lookup[id]
+ 	if !ok {
+ 		wbItem = wb._newItem(id, name, size)
+-	} else {
+-		if wbItem.uploading && modified {
++	} else if modified {
++		if wbItem.uploading {
+ 			// We are uploading already so cancel the upload
+ 			wb._cancelUpload(wbItem)
+ 		}
+diff --git a/vfs/vfscache/writeback/writeback_test.go b/vfs/vfscache/writeback/writeback_test.go
+index 8122ae2da..0b28958b1 100644
+--- a/vfs/vfscache/writeback/writeback_test.go
++++ b/vfs/vfscache/writeback/writeback_test.go
+@@ -467,6 +467,28 @@ func TestWriteBackAddUpdateNotStarted(t *testing.T) {
+ 	assert.False(t, pi.called)
+ }
+ 
++// Re-adding an unmodified item, as closing a dirty file which was only
++// read does, must not delay its upload, otherwise a file which is read
++// more often than the writeback delay never gets uploaded.
++func TestWriteBackAddNotModifiedKeepsExpiry(t *testing.T) {
++	wb, cancel := newTestWriteBack(t)
++	defer cancel()
++	wb.opt.WriteBack = fs.Duration(time.Hour)
++
++	pi := newPutItem(t)
++	id := wb.Add(0, "one", 10, true, pi.put)
++	wbItem := wb.lookup[id]
++	expiry := wbItem.expiry
++
++	time.Sleep(10 * time.Millisecond)
++	wb.Add(id, "one", 10, false, pi.put)
++	assert.Equal(t, expiry, wbItem.expiry, "unmodified add delayed the upload")
++
++	wb.Add(id, "one", 10, true, pi.put)
++	assert.True(t, wbItem.expiry.After(expiry), "modified add didn't delay the upload")
++	assert.False(t, pi.called)
++}
++
+ func TestWriteBackGetStats(t *testing.T) {
+ 	wb, cancel := newTestWriteBack(t)
+ 	defer cancel()
+-- 
+2.43.0
+

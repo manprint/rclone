@@ -58,3 +58,17 @@ Requisiti e limiti:
 - i binari Windows non hanno la risorsa di versione che le release upstream aggiungono con
   `bin/resource_windows.go`;
 - `just image-push` pubblica sul registro indicato: va lanciato solo quando lo si vuole davvero.
+
+## Binario Android
+
+`webui/scripts/build-android.sh` costruisce in Docker il binario per Android (cgo, con l'NDK come
+toolchain C, come il job `android` di `build.yml`) e lo scrive in `build/android`. La versione è quella di
+`make version`. `ANDROID_ARCH` sceglie la destinazione: `arm64` (predefinita), `arm`, `amd64` o `386`.
+
+```bash
+webui/scripts/build-android.sh
+ANDROID_ARCH=arm webui/scripts/build-android.sh
+```
+
+Il Dockerfile è `webui/android/Dockerfile` e il contesto è la radice del repository. Serve la rete: scarica
+l'NDK da dl.google.com.

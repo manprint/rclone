@@ -34,7 +34,7 @@ require (
 	github.com/cloudsoda/go-smb2 v0.0.0-20260918041005-0c5d69b69701
 	github.com/colinmarc/hdfs/v2 v2.4.0
 	github.com/coreos/go-semver v0.3.1
-	github.com/coreos/go-systemd/v22 v22.7.0 // v22.7.0 fails to compile on netbsd - don't upgrade until fixed upstream
+	github.com/coreos/go-systemd/v22 v22.6.0 // v22.7.0 fails to compile on netbsd - don't upgrade until fixed upstream
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/dop251/scsu v0.0.0-20220106150536-84ac88021d00
 	github.com/dropbox/dropbox-sdk-go-unofficial/v6 v6.6.2
@@ -45,7 +45,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/hanwen/go-fuse/v2 v2.12.1 // v2.12.0 fails to compile on 32 bit linux - see https://github.com/hanwen/go-fuse/issues/628
+	github.com/hanwen/go-fuse/v2 v2.11.0 // v2.12.0 fails to compile on 32 bit linux - see https://github.com/hanwen/go-fuse/issues/628
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/internxt/rclone-adapter v0.1.0
 	github.com/jcmturner/gokrb5/v8 v8.4.4

@@ -2,10 +2,9 @@
 
 # Builds the rclone binary for Android with cgo, using the Android NDK as
 # the C toolchain, as the android job of .github/workflows/build.yml does.
-# The context is the repository root, see the build_android target in the
-# Makefile:
+# The context is the repository root, see webui/scripts/build-android.sh:
 #
-#   docker build -f contrib/android/Dockerfile --target binary \
+#   docker build -f webui/android/Dockerfile --target binary \
 #       --output type=local,dest=build .
 #
 # ARCH selects the target: arm64 (default), arm (armv7a), amd64 or 386.

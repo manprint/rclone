@@ -48,7 +48,7 @@ LINTTAGS=--build-tags "$(GOTAGS)"
 endif
 LDFLAGS=--ldflags "-s -X github.com/rclone/rclone/fs.Version=$(TAG)"
 
-.PHONY: rclone test_all vars version fetch-gui fetch-gui-and-commit build_android
+.PHONY: rclone test_all vars version fetch-gui fetch-gui-and-commit
 
 rclone:
 ifeq ($(GO_OS),windows)
@@ -261,15 +261,6 @@ log_since_last_release:
 
 compile_all:
 	go run bin/cross-compile.go -compile-only $(BUILD_FLAGS) $(BUILDTAGS) $(BUILD_ARGS) $(TAG)
-
-# Build the Android binary in docker into build/android. Set ANDROID_ARCH
-# to arm64 (default), arm, amd64 or 386.
-ANDROID_ARCH ?= arm64
-
-build_android:
-	docker build -f contrib/android/Dockerfile --target binary \
-		--build-arg ARCH=$(ANDROID_ARCH) --build-arg VERSION=$(TAG) \
-		--output type=local,dest=build .
 
 ci_upload:
 	sudo chown -R $$USER build

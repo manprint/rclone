@@ -12,6 +12,17 @@ che vieta a tutti i client di cancellare e sovrascrivere (sezione "Upload senza 
 L'interfaccia è attiva per default. Resta spenta (comportamento identico a upstream) con `--webui=false`,
 con `--template` oppure con `--disable-dir-list`.
 
+## Installazione
+
+Installa l'ultima [release](https://github.com/manprint/rclone/releases) del fork (pre-release comprese) su
+Linux, macOS o BSD:
+
+```bash
+sudo -v ; curl -fsSL https://raw.githubusercontent.com/manprint/rclone/main/webui/install.sh | sudo bash
+```
+
+Con un tag si installa una release precisa, per esempio `| sudo bash -s v1.75.2-webui.4`.
+
 ## Avvio rapido
 
 Serve un remote (o una cartella locale) su tutte le interfacce, porta 8000, aprendolo poi con un browser

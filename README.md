@@ -16,18 +16,6 @@
 [![GoDoc](https://godoc.org/github.com/rclone/rclone?status.svg)](https://godoc.org/github.com/rclone/rclone)
 [![Docker Pulls](https://img.shields.io/docker/pulls/rclone/rclone)](https://hub.docker.com/r/rclone/rclone)
 
-## Quick start: rclone webui fork
-
-Install the newest [webui release](https://github.com/manprint/rclone/releases)
-(pre-releases included) on Linux, macOS or BSD:
-
-```sh
-sudo -v ; curl -fsSL https://raw.githubusercontent.com/manprint/rclone/main/webui/install.sh | sudo bash
-```
-
-Pass a tag to install a specific release, e.g. `| sudo bash -s v1.75.2-webui.4`.
-Usage of the web interface is described in [fork-doc/uso.md](fork-doc/uso.md).
-
 # Rclone
 
 Rclone *("rsync for cloud storage")* is a command-line program to sync files and

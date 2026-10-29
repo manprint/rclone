@@ -26,7 +26,7 @@ d'uso è in [uso.md](uso.md), la build in [build.md](build.md), la CI in [ci-e-r
 | `webui/lookup.go` | Stat ed elenchi della VFS condivisi tra richieste contemporanee e abbandonati quando la richiesta finisce |
 | `webui/assets/` | Asset di superdufs, byte per byte, e `SOURCE` (provenienza) |
 | `webui/overlay/overlay.js` | Le sole correzioni JavaScript del fork, caricate dopo `index.js` |
-| `webui/scripts/` | `check-footprint.sh`, `sync-assets.sh`, `sync-upstream.sh`, `smoke.sh`, `build.sh`, `gen-ci.py` |
+| `webui/scripts/` | `check-footprint.sh`, `sync-assets.sh`, `sync-upstream.sh`, `smoke.sh`, `build.sh`, `build-android.sh`, `gen-ci.py` |
 | `.github/workflows/fork-*.yml` | CI del fork, generata da `gen-ci.py` a partire dai workflow upstream |
 | `webui/justfile`, `webui/docker/` | Recipe `just` e `Dockerfile` per l'immagine Docker e per i binari compilati in Docker |
 | `cmd/serve/webdav/webdav_webui.go` | Il collegamento tra `serve webdav` e il package: registra i flag, crea la UI se le condizioni lo permettono e la aggancia al server |

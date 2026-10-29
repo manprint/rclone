@@ -1,4 +1,4 @@
-# Used by BuildKit for contrib/android/Dockerfile only. The version comes from
+# Used by BuildKit for webui/android/Dockerfile only. The version comes from
 # the VERSION build arg, so the build needs no git history.
 .git
 .serena

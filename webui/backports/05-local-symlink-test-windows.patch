@@ -1,0 +1,45 @@
+From 6ccf0e8999ba3c5905dd1c314f9ce0e1a726bae5 Mon Sep 17 00:00:00 2001
+From: Nick Craig-Wood <nick@craig-wood.com>
+Date: Fri, 6 Nov 2026 15:39:27 +0000
+Subject: [PATCH] local: fix TestRemoveThroughPlantedSymlinkBlocked failing on
+ Windows (backport)
+
+Backport of upstream commit 6a4b77208 from master, after v1.76.0, carried as
+webui/backports/05-local-symlink-test-windows.patch until the fork merges a master that has it:
+the test fails the Windows job of the fork CI on v1.76.0.
+
+Upstream commit message:
+
+On Windows os.Root.Symlink always makes a file symlink when the
+target is an absolute path outside the root, and Windows can't
+traverse a file symlink as a directory. The planted link can't reach
+the outside files, so the test failed setting up the attack with "The
+filename, directory name, or volume label syntax is incorrect".
+
+Skip the test on Windows as the other planted symlink tests do.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ backend/local/local_internal_test.go | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/backend/local/local_internal_test.go b/backend/local/local_internal_test.go
+index 680f8d3e3..d4b7cf78b 100644
+--- a/backend/local/local_internal_test.go
++++ b/backend/local/local_internal_test.go
+@@ -597,6 +597,12 @@ func TestMkdirMetadataThroughPlantedSymlinkBlocked(t *testing.T) {
+ // TestRemoveThroughPlantedSymlinkBlocked checks Remove and Rmdir can't
+ // delete anything outside the root through a planted symlink.
+ func TestRemoveThroughPlantedSymlinkBlocked(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		// os.Root.Symlink makes a file symlink to a directory outside
++		// the root, which Windows can't traverse, so the planted link
++		// can't reach the outside files.
++		t.Skip("planted directory symlinks can't be traversed on Windows")
++	}
+ 	skipIfNoSymlinks(t)
+ 	ctx := context.Background()
+ 
+-- 
+2.43.0
+

@@ -64,6 +64,7 @@ type multipartUpload struct {
 	fh     io.WriteCloser // sink the in-order parts are written to, opened by sink (guarded by mu)
 	vfs    *vfs.VFS       // the VFS fh is created on, used for all later operations
 	tenant *tenant        // the user the upload belongs to
+	fail   func()         // tears the upload down when parts streamed in the background fail, or nil
 
 	objectMD5 hash.Hash // MD5 of the data written to the sink, so of the whole object once complete, or nil if not needed for the ETag
 
@@ -325,6 +326,7 @@ func (b *s3Backend) CreateMultipartUpload(ctx context.Context, bucketName, objec
 	up.budget = t.budget
 	up.vfs = _vfs
 	up.madeDir = madeDir
+	up.fail = func() { b.failUpload(uploadID, up) }
 	if b.s.etagHash(_vfs) == fshash.MD5 {
 		up.objectMD5 = md5.New()
 	}
@@ -651,7 +653,34 @@ func (up *multipartUpload) streamDirect(partNumber int, size int64, body io.Read
 	up.partialSize, up.partialMD5 = 0, nil
 	up.nextPart++
 	up.broadcast()
+	if _, ok := up.streamBuf[up.nextPart]; ok && up.vfs.Hold() {
+		// Stream the parts buffered after this one in the background, so
+		// the client gets its reply for this part now rather than after
+		// parts it has already had replies for, which could take longer
+		// than it is prepared to wait.
+		up.active++
+		go up.pumpBackground()
+		up.mu.Unlock()
+		return md5Sum, nil
+	}
 	return md5Sum, up.pump()
+}
+
+// pumpBackground pumps the buffered parts as pump does for a request
+// which has already been answered, failing the upload if one can't be
+// streamed. It takes over the sink and the activity streamDirect started
+// for it.
+func (up *multipartUpload) pumpBackground() {
+	defer up.endActivity()
+	up.mu.Lock()
+	err := up.pump()
+	if err == nil || errors.Is(err, gofakes3.ErrNoSuchUpload) {
+		return
+	}
+	fs.Errorf(up.fp, "multipart upload: streaming buffered part: %v", err)
+	if up.isPoisoned() && up.fail != nil {
+		up.fail()
+	}
 }
 
 // poison marks the upload as one which can never be completed, because the
@@ -883,11 +912,10 @@ func (up *multipartUpload) pump() error {
 // waitPumped waits until no request is writing to the sink, so the parts
 // already accepted have all been streamed before the upload is completed.
 //
-// The request streaming buffered parts can still be doing so after the
-// client has had a reply for every part, when the client gave up waiting
-// for that request and its resend of the request's part was accepted as
-// already streamed. As in waitForTurn, ErrSlowDown is returned if the
-// sink isn't released within multipartWaitTimeout.
+// Parts which were buffered are streamed in the background after the
+// client has had replies for them, so they can still be being streamed
+// when it completes the upload. As in waitForTurn, ErrSlowDown is
+// returned if the sink isn't released within multipartWaitTimeout.
 func (up *multipartUpload) waitPumped(ctx context.Context) error {
 	timer := time.NewTimer(multipartWaitTimeout)
 	defer timer.Stop()
@@ -1183,7 +1211,7 @@ func (up *multipartUpload) close() error {
 		}
 		return nil
 	}
-	if len(up.streamBuf) != 0 || up.nextPart-1 != len(up.partSizes) || up.pumping || up.partialSize != 0 {
+	if len(up.streamBuf) != 0 || up.nextPart-1 != len(up.partSizes) || up.pumping || up.partialSize != 0 || up.poisoned {
 		up.mu.Unlock()
 		return gofakes3.ErrInvalidPart
 	}

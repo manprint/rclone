@@ -71,6 +71,14 @@ these. If the remote doesn't have the MD5 of objects, `HeadObject`
 and listings only return the MD5 of objects uploaded through `serve
 s3` while the object's metadata is kept (see below).
 
+On remotes such as `local`, where the MD5 is computed by reading the
+object, an object whose MD5 isn't kept - after a restart, for
+example - is read in full the first time it is listed or fetched, which
+can take minutes for a big object and outlast the client's timeout. To
+keep the MD5s across restarts serve a [hasher](/hasher/) remote
+wrapping the remote instead, or if clients don't need the `ETag` use
+`--etag-hash ""`.
+
 ### Quickstart
 
 For a simple set up, to serve `remote:path` over s3, run the server

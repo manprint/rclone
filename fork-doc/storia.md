@@ -249,6 +249,23 @@ token e link pubblici restano spenti con `--auth-proxy`. Prima e dopo il merge p
 parti del fork), `golangci-lint`, `shellcheck` e `smoke.sh`; `TestCacheNew` (`vfs/vfscache`) e `TestRc`
 (`cmd/mountlib`) sono falliti una volta sotto carico e passano rilanciati da soli.
 
+## 19. Revisione dopo v1.76.0
+
+- `TestPreAuthBoundaries` fissa il nuovo comportamento dell'autenticazione di v1.76.0, che accetta lo
+  schema `Basic` in qualunque maiuscolo: un download con token e `Authorization: basic …` (o vuoto) passa
+  all'autenticazione, che risponde `401` con credenziali sbagliate e serve il file con quelle giuste.
+- La pulizia di `--webui-resume-dir` toglieva ogni `*.json` più vecchio di 30 giorni della cartella;
+  ora toglie solo i file delle posizioni (`<sha256 esadecimale>.json`).
+- Asset da superdufs 1.6.1 (`c84f9d1`): i comandi `curl` e `wget` copiati dalla pagina mettevano il nome
+  del file tra virgolette doppie, dentro le quali una shell esegue ancora `$(…)` e gli apici inversi,
+  quindi chi poteva scrivere un file sceglieva un comando eseguito da chi incollava. Ora un nome con un
+  carattere che le virgolette doppie interpretano va tra apici singoli. `overlay_test.mjs` fa leggere a
+  `sh` i comandi copiati per nomi ostili.
+- Non corretto, perché upstream (`golang.org/x/net/webdav`, anche su `master` `82cb84b20`): `MOVE` o
+  `COPY` di `serve webdav` verso una cartella che contiene la sorgente (`/a/b` su `/a`), con
+  `Overwrite: T` o senza l'header, cancella la destinazione, cioè anche la sorgente, prima di spostarla;
+  risponde `403` al `MOVE` e `204` alla `COPY`. La pagina non manda richieste così, solo client WebDAV.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

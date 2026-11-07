@@ -1,9 +1,11 @@
 // Runs index.js and then overlay.js in a V8 context with just enough of a
-// browser, as the page does, and checks the function the overlay replaces.
+// browser, as the page does, and checks the function the overlay replaces
+// and the shell commands the page copies.
 //
 // Run with: node --test overlay_test.mjs
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -72,3 +74,29 @@ test("overlay keeps the result for a known size", () => {
   const after = [0, 1, 5, max - 1, max, max + 1].map(size => parts(ctx.formatDirSizeParts, size));
   assert.deepEqual(after, before);
 });
+
+// Anyone who can write a file names it, and a copied curl or wget command is
+// pasted into a shell, where `$(...)` and backticks run inside double quotes.
+// The commands are POSIX shell ones, so there is no sh to parse them on Windows.
+test("copied curl and wget commands keep file names literal in a shell",
+  { skip: process.platform === "win32" && "no POSIX shell" }, () => {
+    const { ctx } = load();
+    vm.runInContext(readFileSync(OVERLAY_JS, "utf8"), ctx, { filename: OVERLAY_JS });
+    let copied = "";
+    ctx.copyTextToClipboard = (btn, text) => { copied = text; };
+    // argv returns the arguments sh makes of the command after its name
+    const argv = command =>
+      execFileSync("sh", ["-c", `set -- ${command}; shift; printf '%s\\0' "$@"`])
+        .toString().split("\0").slice(0, -1);
+    const names = ["$(echo pwned).mp4", "a`id`b", 'say "hi".txt', "it's $HOME!.zip",
+      "back\\slash", "line\nbreak", "plain name.txt"];
+    for (const name of names) {
+      const url = `http://127.0.0.1:8000/${encodeURIComponent(name)}?token=t&x=1`;
+      ctx.copyCurlCommand({}, url, name);
+      assert.deepEqual(argv(copied), ["-o", name, "-L", url], copied);
+      ctx.copyWgetCommand({}, url, name);
+      assert.deepEqual(argv(copied), ["-O", name, url], copied);
+    }
+    ctx.copyWgetCommand({}, "http://127.0.0.1:8000/$(id)", "");
+    assert.deepEqual(argv(copied), ["http://127.0.0.1:8000/$(id)"], copied);
+  });

@@ -21,7 +21,7 @@ Linux, macOS o BSD:
 sudo -v ; curl -fsSL https://raw.githubusercontent.com/manprint/rclone/main/webui/install.sh | sudo bash
 ```
 
-Con un tag si installa una release precisa, per esempio `| sudo bash -s v1.75.2-webui.4`.
+Con un tag si installa una release precisa, per esempio `| sudo bash -s v1.76.0-webui.1`.
 
 ## Avvio rapido
 

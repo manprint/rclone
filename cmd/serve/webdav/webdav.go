@@ -457,6 +457,11 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if (r.Method == "COPY" || r.Method == "MOVE") && r.Header.Get("Overwrite") == "" {
 		r.Header.Set("Overwrite", "T")
 	}
+	if r.Method == "PUT" {
+		body := &putBody{ReadCloser: r.Body}
+		r.Body = body
+		r = r.WithContext(context.WithValue(r.Context(), putBodyKey{}, body))
+	}
 	// Add URL Prefix back to path since webdavhandler needs to
 	// return absolute references.
 	r.URL.Path = w.opt.HTTP.BaseURL + r.URL.Path
@@ -645,11 +650,40 @@ func (w *WebDAV) Stat(ctx context.Context, name string) (fi os.FileInfo, err err
 	return FileInfo{FileInfo: fi, w: w}, nil
 }
 
+// putBody is the body of a PUT request, recording the error reading it
+type putBody struct {
+	io.ReadCloser
+	err error
+}
+
+// putBodyKey is the context key for the putBody of a PUT request
+type putBodyKey struct{}
+
+func (b *putBody) Read(p []byte) (n int, err error) {
+	n, err = b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
 // Handle represents an open file
 type Handle struct {
 	vfs.Handle
 	w   *WebDAV
 	ctx context.Context
+}
+
+// Close closes the file. The webdav handler closes it normally even if
+// the body of the PUT writing it failed, so abandon the write then, so the
+// part received isn't stored as if it were the whole file.
+func (h Handle) Close() error {
+	if body, ok := h.ctx.Value(putBodyKey{}).(*putBody); ok && body.err != nil {
+		if aborter, ok := h.Handle.(interface{ CloseWithError(error) error }); ok {
+			return aborter.CloseWithError(body.err)
+		}
+	}
+	return h.Handle.Close()
 }
 
 // Readdir reads directory entries from the handle

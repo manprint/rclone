@@ -761,3 +761,47 @@ func TestDisableDepthInfinity(t *testing.T) {
 		})
 	}
 }
+
+// cutOffReader returns n bytes then fails like a request body cut off by
+// the connection dropping
+type cutOffReader struct{ n int }
+
+func (r *cutOffReader) Read(p []byte) (int, error) {
+	if r.n <= 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+	p = p[:min(len(p), r.n)]
+	r.n -= len(p)
+	return len(p), nil
+}
+
+// Test that a PUT whose body is cut off doesn't store the part received
+// as if it were the whole file
+func TestPutCutOff(t *testing.T) {
+	ctx := context.Background()
+	f, err := fs.NewFs(ctx, ":memory:webdav-put-cut-off")
+	require.NoError(t, err)
+	_, err = operations.Rcat(ctx, f, "old.txt", io.NopCloser(strings.NewReader("OLD")), fstest.Time("2001-02-03T04:05:06Z"), nil)
+	require.NoError(t, err)
+
+	opt := Opt
+	opt.HTTP.ListenAddr = []string{"localhost:0"}
+	w, err := newWebDAV(ctx, f, &opt, &vfscommon.Opt, &proxy.Opt)
+	require.NoError(t, err)
+	w.server.Serve()
+	defer func() {
+		assert.NoError(t, w.Shutdown())
+	}()
+
+	for _, name := range []string{"new.txt", "old.txt"} {
+		req := httptest.NewRequest("PUT", "/"+name, &cutOffReader{n: 1024 * 1024})
+		rec := httptest.NewRecorder()
+		w.server.Router().ServeHTTP(rec, req)
+		assert.GreaterOrEqual(t, rec.Code, 400, name)
+	}
+	_, err = f.NewObject(ctx, "new.txt")
+	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
+	o, err := f.NewObject(ctx, "old.txt")
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), o.Size())
+}

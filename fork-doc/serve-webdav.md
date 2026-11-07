@@ -5,7 +5,7 @@ le correzioni fatte e i flag consigliati. Le correzioni al codice sono in due ba
 
 - `webui/backports/08-http-progress-timeouts.patch` (`lib/http`, vale anche per `serve http`, `serve s3`,
   `serve restic`, `rcd`);
-- `webui/backports/09-webdav-disable-depth-infinity.patch` (`cmd/serve/webdav`).
+- `webui/backports/09-serve-webdav-small-hosts.patch` (`cmd/serve/webdav`).
 
 Tutti i numeri qui sotto sono misurati, con il metodo descritto in [Riprodurre le misure](#8-riprodurre-le-misure).
 

@@ -1,8 +1,8 @@
-From dc74870e309b159cb05f4d833d860011fc922b25 Mon Sep 17 00:00:00 2001
+From e75637f1c2ddaf64dee760a400e9aa82dc81350b Mon Sep 17 00:00:00 2001
 From: Fabio <fabio@git.it>
-Date: Sat, 7 Nov 2026 14:09:07 +0100
-Subject: [PATCH] serve webdav: add --disable-depth-infinity to stop whole tree
- listings using lots of memory (backport)
+Date: Sat, 7 Nov 2026 15:24:14 +0100
+Subject: [PATCH] serve webdav: stop deep listings and cut off uploads hurting
+ small hosts (backport)
 
 A PROPFIND with Depth: infinity, or with no Depth header, lists the
 whole tree in one response. On a big tree this reads every directory
@@ -13,14 +13,20 @@ With --disable-depth-infinity these requests are rejected with 403 and
 a propfind-finite-depth error, as allowed by RFC 4918, and clients list
 one level at a time with Depth: 1. The default is unchanged.
 
+When the body of a PUT was cut off part way, for example because the
+client was killed mid-stream, the webdav handler closed the file
+normally and the part received was stored as if it were the whole
+file. The write is now abandoned instead, so the upload fails and the
+partial file is discarded.
+
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- cmd/serve/webdav/webdav.go      | 37 ++++++++++++++++++++++++++------
- cmd/serve/webdav/webdav_test.go | 38 +++++++++++++++++++++++++++++++++
- 2 files changed, 69 insertions(+), 6 deletions(-)
+ cmd/serve/webdav/webdav.go      | 71 +++++++++++++++++++++++++---
+ cmd/serve/webdav/webdav_test.go | 82 +++++++++++++++++++++++++++++++++
+ 2 files changed, 147 insertions(+), 6 deletions(-)
 
 diff --git a/cmd/serve/webdav/webdav.go b/cmd/serve/webdav/webdav.go
-index 376f1f3ff..8a5f9ac9b 100644
+index 376f1f3ff..4b9aea087 100644
 --- a/cmd/serve/webdav/webdav.go
 +++ b/cmd/serve/webdav/webdav.go
 @@ -5,6 +5,7 @@ import (
@@ -95,8 +101,63 @@ index 376f1f3ff..8a5f9ac9b 100644
  	isDir := strings.HasSuffix(urlPath, "/")
  	remote := strings.Trim(urlPath, "/")
  	if !w.opt.DisableDirList && (r.Method == "GET" || r.Method == "HEAD") && isDir {
+@@ -429,6 +454,11 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+ 	if (r.Method == "COPY" || r.Method == "MOVE") && r.Header.Get("Overwrite") == "" {
+ 		r.Header.Set("Overwrite", "T")
+ 	}
++	if r.Method == "PUT" {
++		body := &putBody{ReadCloser: r.Body}
++		r.Body = body
++		r = r.WithContext(context.WithValue(r.Context(), putBodyKey{}, body))
++	}
+ 	// Add URL Prefix back to path since webdavhandler needs to
+ 	// return absolute references.
+ 	r.URL.Path = w.opt.HTTP.BaseURL + r.URL.Path
+@@ -617,6 +647,23 @@ func (w *WebDAV) Stat(ctx context.Context, name string) (fi os.FileInfo, err err
+ 	return FileInfo{FileInfo: fi, w: w}, nil
+ }
+ 
++// putBody is the body of a PUT request, recording the error reading it
++type putBody struct {
++	io.ReadCloser
++	err error
++}
++
++// putBodyKey is the context key for the putBody of a PUT request
++type putBodyKey struct{}
++
++func (b *putBody) Read(p []byte) (n int, err error) {
++	n, err = b.ReadCloser.Read(p)
++	if err != nil && err != io.EOF {
++		b.err = err
++	}
++	return n, err
++}
++
+ // Handle represents an open file
+ type Handle struct {
+ 	vfs.Handle
+@@ -624,6 +671,18 @@ type Handle struct {
+ 	ctx context.Context
+ }
+ 
++// Close closes the file. The webdav handler closes it normally even if
++// the body of the PUT writing it failed, so abandon the write then, so the
++// part received isn't stored as if it were the whole file.
++func (h Handle) Close() error {
++	if body, ok := h.ctx.Value(putBodyKey{}).(*putBody); ok && body.err != nil {
++		if aborter, ok := h.Handle.(interface{ CloseWithError(error) error }); ok {
++			return aborter.CloseWithError(body.err)
++		}
++	}
++	return h.Handle.Close()
++}
++
+ // Readdir reads directory entries from the handle
+ func (h Handle) Readdir(count int) (fis []os.FileInfo, err error) {
+ 	fis, err = h.Handle.Readdir(count)
 diff --git a/cmd/serve/webdav/webdav_test.go b/cmd/serve/webdav/webdav_test.go
-index 8b10c9890..7b885c00c 100644
+index 8b10c9890..7195b3167 100644
 --- a/cmd/serve/webdav/webdav_test.go
 +++ b/cmd/serve/webdav/webdav_test.go
 @@ -16,6 +16,7 @@ import (
@@ -107,7 +168,7 @@ index 8b10c9890..7b885c00c 100644
  	"strings"
  	"testing"
  
-@@ -723,3 +724,40 @@ func testPathTraversal(t *testing.T, baseURL string) {
+@@ -723,3 +724,84 @@ func testPathTraversal(t *testing.T, baseURL string) {
  		fstest.NewItem("served-root/dir/inside-dir.txt", "INSIDE DIR", modTime),
  	}, []string{"served-root", "served-root/dir"}, fs.GetModifyWindow(ctx, outside))
  }
@@ -147,6 +208,50 @@ index 8b10c9890..7b885c00c 100644
 +			}
 +		})
 +	}
++}
++
++// cutOffReader returns n bytes then fails like a request body cut off by
++// the connection dropping
++type cutOffReader struct{ n int }
++
++func (r *cutOffReader) Read(p []byte) (int, error) {
++	if r.n <= 0 {
++		return 0, io.ErrUnexpectedEOF
++	}
++	p = p[:min(len(p), r.n)]
++	r.n -= len(p)
++	return len(p), nil
++}
++
++// Test that a PUT whose body is cut off doesn't store the part received
++// as if it were the whole file
++func TestPutCutOff(t *testing.T) {
++	ctx := context.Background()
++	f, err := fs.NewFs(ctx, ":memory:webdav-put-cut-off")
++	require.NoError(t, err)
++	_, err = operations.Rcat(ctx, f, "old.txt", io.NopCloser(strings.NewReader("OLD")), fstest.Time("2001-02-03T04:05:06Z"), nil)
++	require.NoError(t, err)
++
++	opt := Opt
++	opt.HTTP.ListenAddr = []string{"localhost:0"}
++	w, err := newWebDAV(ctx, f, &opt, &vfscommon.Opt, &proxy.Opt)
++	require.NoError(t, err)
++	w.server.Serve()
++	defer func() {
++		assert.NoError(t, w.Shutdown())
++	}()
++
++	for _, name := range []string{"new.txt", "old.txt"} {
++		req := httptest.NewRequest("PUT", "/"+name, &cutOffReader{n: 1024 * 1024})
++		rec := httptest.NewRecorder()
++		w.server.Router().ServeHTTP(rec, req)
++		assert.GreaterOrEqual(t, rec.Code, 400, name)
++	}
++	_, err = f.NewObject(ctx, "new.txt")
++	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
++	o, err := f.NewObject(ctx, "old.txt")
++	require.NoError(t, err)
++	assert.Equal(t, int64(3), o.Size())
 +}
 -- 
 2.53.0

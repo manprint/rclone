@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +21,8 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/object"
+	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/vfs"
 	"github.com/rclone/rclone/vfs/vfscommon"
@@ -552,4 +556,72 @@ func TestPartRuns(t *testing.T) {
 			assert.Equal(t, tc.sizes, runs.sizes())
 		})
 	}
+}
+
+// putAgedObject puts an object of a few bytes at remote on f, last
+// modified at modTime.
+func putAgedObject(t *testing.T, f fs.Fs, remote string, modTime time.Time) {
+	src := object.NewStaticObjectInfo(remote, modTime, 3, true, nil, nil)
+	_, err := f.Put(context.Background(), strings.NewReader("abc"), src)
+	require.NoError(t, err)
+}
+
+// TestRemoveStaleTempObjects checks that the temporary objects of
+// unfinished uploads are removed once they are older than the expiry, and
+// nothing else is.
+func TestRemoveStaleTempObjects(t *testing.T) {
+	for _, tc := range testRemotes {
+		t.Run(tc.name, func(t *testing.T) {
+			fstest.Initialise()
+			ctx := context.Background()
+			backing := tc.backing
+			if backing == "" {
+				backing = t.TempDir()
+			}
+			f, err := fs.NewFs(ctx, backing)
+			require.NoError(t, err)
+			bucket := fmt.Sprintf("sweep-%d", testBackingCounter.Add(1))
+			old := time.Now().Add(-2 * time.Hour)
+			for _, remote := range []string{
+				putObjectPrefix + "a",
+				"dir/" + multipartUploadPrefix + "b",
+				legacyMultipartUploadPrefix + "c",
+			} {
+				putAgedObject(t, f, path.Join(bucket, remote), old)
+			}
+			putAgedObject(t, f, path.Join(bucket, putObjectPrefix+"recent"), time.Now())
+			putAgedObject(t, f, path.Join(bucket, "dir/old"), old)
+			putAgedObject(t, f, path.Join(bucket, ".rclone_tempx"), old)
+
+			removeStaleTempObjects(ctx, f, time.Hour)
+
+			var left []string
+			require.NoError(t, walk.ListR(ctx, f, bucket, true, -1, walk.ListObjects, func(entries fs.DirEntries) error {
+				for _, entry := range entries {
+					left = append(left, strings.TrimPrefix(entry.Remote(), bucket+"/"))
+				}
+				return nil
+			}))
+			assert.ElementsMatch(t, []string{putObjectPrefix + "recent", "dir/old", ".rclone_tempx"}, left)
+		})
+	}
+}
+
+// TestTempObjectExpiry checks that --temp-object-expiry removes the stale
+// temporary objects when the server starts.
+func TestTempObjectExpiry(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "bucket", putObjectPrefix+"a")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o777))
+	require.NoError(t, os.WriteFile(stale, []byte("abc"), 0o666))
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stale, old, old))
+
+	newMultipartTestServerOpt(t, dir, false, func(opt *Options) {
+		opt.TempObjectExpiry = fs.Duration(time.Hour)
+	})
+	assert.Eventually(t, func() bool {
+		_, err := os.Stat(stale)
+		return os.IsNotExist(err)
+	}, 10*time.Second, 10*time.Millisecond)
 }

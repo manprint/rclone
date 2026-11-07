@@ -65,6 +65,10 @@ var OptionsInfo = fs.Options{{
 	Name:    "multipart_expiry",
 	Default: fs.Duration(24 * time.Hour),
 	Help:    "Abort incomplete multipart uploads idle for longer than this, 0 to keep forever",
+}, {
+	Name:    "temp_object_expiry",
+	Default: fs.Duration(0),
+	Help:    "On startup remove temporary objects of unfinished uploads older than this, 0 to keep them",
 }}.
 	Add(httplib.ConfigInfo).
 	Add(httplib.AuthConfigInfo)
@@ -82,6 +86,7 @@ type Options struct {
 	MultipartMaxUploads           int           `config:"multipart_max_uploads"`
 	MetadataMaxObjects            int           `config:"metadata_max_objects"`
 	MultipartExpiry               fs.Duration   `config:"multipart_expiry"`
+	TempObjectExpiry              fs.Duration   `config:"temp_object_expiry"`
 	DirectoryMarkers              bool          `config:"directory_markers"`
 	Auth                          httplib.AuthConfig
 	HTTP                          httplib.Config

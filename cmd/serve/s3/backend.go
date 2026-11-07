@@ -25,6 +25,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	fshash "github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/operations"
+	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/vfs"
 	"github.com/rclone/rclone/vfs/vfscommon"
 )
@@ -61,6 +62,9 @@ type s3Backend struct {
 
 	reaperQuit chan struct{} // closed to stop the abandoned upload reaper
 	reaperStop sync.Once
+
+	sweepCancel context.CancelFunc // stops the stale temporary object sweep, or nil
+	sweepDone   chan struct{}      // closed when the sweep has finished
 
 	commitLocks pathLocks // serialises moving objects into place, see commitObject
 }
@@ -978,4 +982,56 @@ func (b *s3Backend) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket
 		ETag:         quoteETag(c.Hash),
 		LastModified: gofakes3.NewContentTime(cStat.ModTime()),
 	}, nil
+}
+
+// startTempSweep starts removing the stale temporary objects on f in the
+// background, as removeStaleTempObjects does. Stopped by stopTempSweep.
+func (b *s3Backend) startTempSweep(ctx context.Context, f fs.Fs, age time.Duration) {
+	ctx, b.sweepCancel = context.WithCancel(ctx)
+	b.sweepDone = make(chan struct{})
+	go func() {
+		defer close(b.sweepDone)
+		removeStaleTempObjects(ctx, f, age)
+	}()
+}
+
+// stopTempSweep stops the stale temporary object sweep, if running, and
+// waits for it to finish.
+func (b *s3Backend) stopTempSweep() {
+	if b.sweepCancel != nil {
+		b.sweepCancel()
+		<-b.sweepDone
+	}
+}
+
+// removeStaleTempObjects removes the temporary objects on f not modified
+// for longer than age. Uploads in progress are only known to the server
+// running them, so these are left by uploads which never finished because
+// a server was stopped, unless another server serving f is running uploads
+// idle for longer than age.
+func removeStaleTempObjects(ctx context.Context, f fs.Fs, age time.Duration) {
+	cutoff := time.Now().Add(-age)
+	var removed, failed int
+	err := walk.ListR(ctx, f, "", true, -1, walk.ListObjects, func(entries fs.DirEntries) error {
+		for _, entry := range entries {
+			o, ok := entry.(fs.Object)
+			if !ok || !isTempObject(path.Base(o.Remote())) || !o.ModTime(ctx).Before(cutoff) {
+				continue
+			}
+			if err := o.Remove(ctx); err != nil {
+				fs.Errorf(o, "failed to remove stale temporary object: %v", err)
+				failed++
+				continue
+			}
+			fs.Infof(o, "removed stale temporary object")
+			removed++
+		}
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		fs.Errorf(f, "serve s3: looking for stale temporary objects: %v", err)
+	}
+	if removed > 0 || failed > 0 {
+		fs.Logf(f, "serve s3: removed %d stale temporary objects older than %v, failed to remove %d", removed, fs.Duration(age), failed)
+	}
 }

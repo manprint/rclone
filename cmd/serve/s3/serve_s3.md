@@ -334,6 +334,16 @@ rclone v1.75 named its temporary multipart objects
 `.rclone_multipart_upload_*`; leftovers from an older server are also
 hidden from listings and can be cleaned up the same way.
 
+Alternatively set `--temp-object-expiry` (for example to `24h`) and the
+server does this itself when it starts: it walks the whole remote in
+the background and removes the temporary objects, of either name, not
+modified for longer than that. On a remote with a lot of objects the
+walk can take a while; requests are served meanwhile. The same advice
+applies to the value as to `--min-age`: if several servers share the
+remote it must be longer than any of them leaves an upload idle, so no
+shorter than their `--multipart-expiry`. It is ignored with
+`--auth-proxy`, where the remotes aren't known until users log in.
+
 #### Abandoned uploads
 
 A client which starts a multipart upload and vanishes without either

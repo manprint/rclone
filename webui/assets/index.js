@@ -1578,8 +1578,27 @@ function copyPublicLink(btn, url) {
   copyTextToClipboard(btn, url);
 }
 
+/**
+ * One shell argument. Double quotes, as always, for what they keep literal in
+ * every shell (cmd.exe included); POSIX single quotes for a value with a
+ * character double quotes would still interpret, such as `$(...)` in a
+ * hostile file name, so pasting the command never runs anything.
+ */
+function shellArg(value) {
+  if (!/[$`"\\!\x00-\x1f\x7f]/.test(value)) return `"${value}"`;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function curlCommand(url, fileName) {
+  return `curl -o ${shellArg(fileName)} -L ${shellArg(url)}`;
+}
+
+function wgetCommand(url, fileName) {
+  return fileName ? `wget -O ${shellArg(fileName)} ${shellArg(url)}` : `wget ${shellArg(url)}`;
+}
+
 function copyCurlCommand(btn, url, fileName) {
-  copyTextToClipboard(btn, `curl -o "${fileName}" -L "${url}"`);
+  copyTextToClipboard(btn, curlCommand(url, fileName));
 }
 
 /**
@@ -1589,7 +1608,7 @@ function copyCurlCommand(btn, url, fileName) {
  *   relying on the server's Content-Disposition.
  */
 function copyWgetCommand(btn, url, fileName) {
-  copyTextToClipboard(btn, fileName ? `wget -O "${fileName}" "${url}"` : `wget "${url}"`);
+  copyTextToClipboard(btn, wgetCommand(url, fileName));
 }
 
 // ── Mobile bottom sheet ──────────────────────────────────────
@@ -1609,13 +1628,13 @@ function setupPublinkSheet() {
   UI.publinkSheetCurl.addEventListener("click", () => {
     if (_sheetData) {
       copyTextToClipboard(UI.publinkSheetCurl,
-        `curl -o "${_sheetData.downloadName}" -L "${_sheetData.downloadUrl}"`);
+        curlCommand(_sheetData.downloadUrl, _sheetData.downloadName));
     }
   });
   UI.publinkSheetWget.addEventListener("click", () => {
     if (_sheetData) {
       copyTextToClipboard(UI.publinkSheetWget,
-        `wget -O "${_sheetData.downloadName}" "${_sheetData.downloadUrl}"`);
+        wgetCommand(_sheetData.downloadUrl, _sheetData.downloadName));
     }
   });
 }

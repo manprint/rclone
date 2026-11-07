@@ -243,7 +243,8 @@ su qualunque percorso:
 - `?resume-clear`: `204`, anche se non c'era una posizione.
 
 Le risposte portano `Cache-Control: no-store`. Almeno una volta ogni 24 ore, al primo salvataggio, il server
-cancella in background le posizioni più vecchie di `--webui-resume-retention`.
+cancella in background le posizioni più vecchie di `--webui-resume-retention`. Cancella solo i file delle
+posizioni (`<sha256 esadecimale>.json`): gli altri file della `--webui-resume-dir` restano.
 
 ## Ricerca e statistiche
 

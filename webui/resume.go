@@ -97,6 +97,20 @@ func resumeKey(configString, remote string) string {
 	return hex.EncodeToString(sum[:]) + ".json"
 }
 
+// isResumeKey reports whether name is a key made by resumeKey
+func isResumeKey(name string) bool {
+	hash, ok := strings.CutSuffix(name, ".json")
+	if !ok || len(hash) != 2*sha256.Size {
+		return false
+	}
+	for _, c := range hash {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // load returns the record stored under key. The error satisfies
 // os.ErrNotExist if there is none.
 func (s *resumeStore) load(key string) (*resumeRecord, error) {
@@ -183,7 +197,8 @@ func (s *resumeStore) cleanup(now time.Time) (removed int) {
 	}
 	cutoff := now.Add(-s.retention)
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		// The directory may hold other files, so only records are removed
+		if entry.IsDir() || !isResumeKey(entry.Name()) {
 			continue
 		}
 		var saved time.Time

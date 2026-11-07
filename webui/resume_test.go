@@ -102,19 +102,23 @@ func TestResumeCleanup(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Now()
 
-	require.NoError(t, s.save("old.json", &resumeRecord{Timestamp: now.Add(-48 * time.Hour).Unix()}))
-	require.NoError(t, s.save("new.json", &resumeRecord{Timestamp: now.Add(-time.Hour).Unix()}))
+	oldKey, newKey := resumeKey("remote:", "old.mp4"), resumeKey("remote:", "new.mp4")
+	require.NoError(t, s.save(oldKey, &resumeRecord{Timestamp: now.Add(-48 * time.Hour).Unix()}))
+	require.NoError(t, s.save(newKey, &resumeRecord{Timestamp: now.Add(-time.Hour).Unix()}))
 	// The age of a record which can't be parsed is that of its file
-	corruptOld := filepath.Join(dir, "corrupt-old.json")
-	corruptNew := filepath.Join(dir, "corrupt-new.json")
+	corruptOldKey, corruptNewKey := resumeKey("remote:", "corrupt-old.mp4"), resumeKey("remote:", "corrupt-new.mp4")
+	corruptOld := filepath.Join(dir, corruptOldKey)
+	corruptNew := filepath.Join(dir, corruptNewKey)
 	for _, p := range []string{corruptOld, corruptNew} {
 		require.NoError(t, os.WriteFile(p, []byte("not json"), 0600))
 	}
 	require.NoError(t, os.Chtimes(corruptOld, now, now.Add(-48*time.Hour)))
-	// Other files are left alone
-	other := filepath.Join(dir, "other.txt")
-	require.NoError(t, os.WriteFile(other, []byte("x"), 0600))
-	require.NoError(t, os.Chtimes(other, now, now.Add(-48*time.Hour)))
+	// Other files are left alone, JSON ones too: the directory may be shared
+	for _, name := range []string{"other.txt", "notes.json", strings.ToUpper(oldKey[:64]) + ".json", oldKey[:63] + ".json"} {
+		other := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(other, []byte(`{"timestamp":1}`), 0600))
+		require.NoError(t, os.Chtimes(other, now, now.Add(-48*time.Hour)))
+	}
 
 	assert.Equal(t, 2, s.cleanup(now))
 	names := []string{}
@@ -123,7 +127,7 @@ func TestResumeCleanup(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	assert.ElementsMatch(t, []string{"new.json", "corrupt-new.json", "other.txt"}, names)
+	assert.ElementsMatch(t, []string{newKey, corruptNewKey, "other.txt", "notes.json", strings.ToUpper(oldKey[:64]) + ".json", oldKey[:63] + ".json"}, names)
 
 	t.Run("Due", func(t *testing.T) {
 		s := &resumeStore{dir: dir, retention: time.Hour}

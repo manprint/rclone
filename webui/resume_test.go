@@ -113,8 +113,11 @@ func TestResumeCleanup(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte("not json"), 0600))
 	}
 	require.NoError(t, os.Chtimes(corruptOld, now, now.Add(-48*time.Hour)))
-	// Other files are left alone, JSON ones too: the directory may be shared
-	for _, name := range []string{"other.txt", "notes.json", strings.ToUpper(oldKey[:64]) + ".json", oldKey[:63] + ".json"} {
+	// Other files are left alone, JSON ones too: the directory may be shared.
+	// The upper case name is not that of a record, which on a case insensitive
+	// file system (macOS, Windows) would be the same file.
+	upper := strings.ToUpper(resumeKey("remote:", "upper.mp4")[:64]) + ".json"
+	for _, name := range []string{"other.txt", "notes.json", upper, oldKey[:63] + ".json"} {
 		other := filepath.Join(dir, name)
 		require.NoError(t, os.WriteFile(other, []byte(`{"timestamp":1}`), 0600))
 		require.NoError(t, os.Chtimes(other, now, now.Add(-48*time.Hour)))
@@ -127,7 +130,7 @@ func TestResumeCleanup(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	assert.ElementsMatch(t, []string{newKey, corruptNewKey, "other.txt", "notes.json", strings.ToUpper(oldKey[:64]) + ".json", oldKey[:63] + ".json"}, names)
+	assert.ElementsMatch(t, []string{newKey, corruptNewKey, "other.txt", "notes.json", upper, oldKey[:63] + ".json"}, names)
 
 	t.Run("Due", func(t *testing.T) {
 		s := &resumeStore{dir: dir, retention: time.Hour}

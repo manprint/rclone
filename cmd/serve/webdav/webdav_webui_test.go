@@ -1830,8 +1830,15 @@ func TestPreAuthBoundaries(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, basic(testUser, "wrong")))
 		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, basic("nobody", testPass)))
 		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, map[string]string{"Authorization": "Bearer abc"}))
+		// The auth takes the scheme in any case, so these are credentials too
+		lower := func(user, pass string) map[string]string {
+			return map[string]string{"Authorization": "basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))}
+		}
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, lower(testUser, "wrong")))
+		assert.Equal(t, http.StatusUnauthorized, status("GET", base+"f.txt?token="+tok, map[string]string{"Authorization": ""}))
 		// With right ones it is the ordinary download
 		assert.Equal(t, http.StatusOK, status("GET", base+"f.txt?token="+tok, creds))
+		assert.Equal(t, http.StatusOK, status("GET", base+"f.txt?token="+tok, lower(testUser, testPass)))
 	})
 
 	t.Run("ActiveFilesSandboxed", func(t *testing.T) {

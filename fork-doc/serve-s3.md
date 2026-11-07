@@ -4,8 +4,8 @@ Questo fork migliora `rclone serve s3` per l'uso su molte macchine con **1 GB di
 1 CPU e storage nell'ordine dei TB** (tipicamente remote `local`), dove i client caricano
 backup anche da **200 GB** con upload multipart.
 
-Branch: `fix/serve-s3-low-memory-big-objects`. Tutti i comandi e i numeri qui sotto sono
-stati verificati su questo branch (dettagli in [Misure](#misure)).
+Le modifiche al codice sono nel backport `webui/backports/07-serve-s3-small-hosts.patch`. Tutti i comandi e i numeri qui sotto sono
+stati verificati con queste modifiche (dettagli in [Misure](#misure)).
 
 ---
 

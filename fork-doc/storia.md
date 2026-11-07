@@ -231,6 +231,24 @@ assegnato i runner macOS ("The job was not acquired by Runner of type hosted"): 
 secondo tentativo è verde e ha pubblicato [la release](https://github.com/manprint/rclone/releases/tag/v1.75.2-webui.4)
 con 51 file; le immagini `1.75.2-webui.4` e `latest` stampano `rclone v1.75.2-webui.4`.
 
+## 18. Allineamento a upstream v1.76.0
+
+Il ramo `sync/v1.76.0`, da `main` (tag di backup `backup/pre-v1.76-2026-11-07`), unisce il tag `v1.76.0`
+con `UPSTREAM_REF=v1.76.0 webui/scripts/sync-upstream.sh`: merge senza conflitti (114 commit upstream),
+CI del fork rigenerata, footprint OK. Lo script ha tolto il backport `02-pr9979.patch`, unito upstream in
+`d1c54c4e5`; restano `01-vfs-list-without-lock`, `03-pr10172` e `04-pr10127`, che si applicano ancora.
+Correzione dello script: il secondo run dei test con `RCLONE_WEBUI=false` usciva dalla cache di `go test`
+(la variabile è letta in `init()`, che la cache non registra), quindi ripeteva il risultato con la UI
+accesa; ora usa `-count=1`.
+
+Le correzioni di sicurezza di v1.76.0 che toccano i server (autenticazione Basic di `lib/http` riscritta
+senza `go-http-auth`, limiti del server rc, revoca dell'auth proxy entro 5 minuti) non cambiano il
+contratto con la UI: `PreAuth` serve senza credenziali solo asset, link pubblici e download con token, e
+token e link pubblici restano spenti con `--auth-proxy`. Prima e dopo il merge passano gli stessi test
+(`go test ./webui/... ./cmd/... ./lib/... ./fs/... ./vfs/...`, anche con la UI spenta e con `-race` sulle
+parti del fork), `golangci-lint`, `shellcheck` e `smoke.sh`; `TestCacheNew` (`vfs/vfscache`) e `TestRc`
+(`cmd/mountlib`) sono falliti una volta sotto carico e passano rilanciati da soli.
+
 ## Commit del fork
 
 Dal più recente, fino alla pubblicazione della CI; la base è il commit upstream `81e7372f6`. I commit

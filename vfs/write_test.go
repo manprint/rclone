@@ -504,3 +504,102 @@ func TestWriteFileHandleCloseWithErrorStalled(t *testing.T) {
 		t.Fatal("the blocked write was never unblocked")
 	}
 }
+
+// failingFs is an Fs whose streaming uploads fail with errUploadFailed
+// after reading a little of their input.
+type failingFs struct {
+	fs.Fs
+	features *fs.Features
+	// replaces makes uploads read all their input and remove the file
+	// they are replacing before failing, as the local backend does,
+	// closing started once they have begun
+	replaces bool
+	started  chan struct{}
+}
+
+var errUploadFailed = errors.New("upload failed")
+
+func newFailingFs(base fs.Fs) *failingFs {
+	f := &failingFs{Fs: base}
+	features := *base.Features()
+	features.PutStream = f.PutStream
+	f.features = &features
+	return f
+}
+
+// Features returns the optional features of this Fs
+func (f *failingFs) Features() *fs.Features { return f.features }
+
+// PutStream reads a little of in then fails.
+func (f *failingFs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
+	if !f.replaces {
+		_, _ = in.Read(make([]byte, 1024))
+		return nil, errUploadFailed
+	}
+	close(f.started)
+	_, err := io.Copy(io.Discard, in)
+	if o, findErr := f.NewObject(ctx, src.Remote()); findErr == nil {
+		_ = o.Remove(ctx)
+	}
+	if err == nil {
+		err = errUploadFailed
+	}
+	return nil, err
+}
+
+// TestWriteFileHandleUploadFailed checks that writes after the upload has
+// failed return the error the upload failed with.
+func TestWriteFileHandleUploadFailed(t *testing.T) {
+	r := fstest.NewRun(t)
+	opt := vfscommon.Opt
+	opt.WriteWait += 2 * fs.Duration(time.Millisecond)
+	vfs := New(context.Background(), newFailingFs(r.Fremote), &opt)
+	t.Cleanup(vfs.Shutdown)
+
+	h, err := vfs.OpenFile("failed", os.O_WRONLY|os.O_CREATE, 0777)
+	require.NoError(t, err)
+	buf := make([]byte, 1<<20)
+	for range 64 {
+		if _, err = h.Write(buf); err != nil {
+			break
+		}
+	}
+	require.ErrorIs(t, err, errUploadFailed)
+	// An out of order write reports the failure too
+	_, err = h.WriteAt(buf, 1<<40)
+	require.ErrorIs(t, err, errUploadFailed)
+	require.ErrorIs(t, h.Close(), errUploadFailed)
+}
+
+// TestWriteFileHandleFailedReplace checks that a file is no longer listed
+// once a failed upload replacing it has removed it.
+func TestWriteFileHandleFailedReplace(t *testing.T) {
+	for _, abandon := range []bool{false, true} {
+		t.Run(map[bool]string{false: "failed", true: "abandoned"}[abandon], func(t *testing.T) {
+			r := fstest.NewRun(t)
+			r.WriteObject(context.Background(), "file", "old contents", t1)
+			f := newFailingFs(r.Fremote)
+			f.replaces = true
+			f.started = make(chan struct{})
+			vfs := New(context.Background(), f, &vfscommon.Opt)
+			t.Cleanup(vfs.Shutdown)
+			_, err := vfs.Stat("file")
+			require.NoError(t, err)
+
+			h, err := vfs.OpenFile("file", os.O_WRONLY|os.O_TRUNC, 0777)
+			require.NoError(t, err)
+			_, err = h.Write(make([]byte, 1<<20))
+			require.NoError(t, err)
+			if abandon {
+				<-f.started
+				err = h.(*WriteFileHandle).CloseWithError(errors.New("abandoned"))
+			} else {
+				err = h.Close()
+			}
+			require.Error(t, err)
+
+			_, err = vfs.Stat("file")
+			assert.Equal(t, ENOENT, err, "the removed file must not be listed")
+		})
+	}
+}

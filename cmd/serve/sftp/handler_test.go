@@ -8,6 +8,7 @@ package sftp
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"runtime"
@@ -329,4 +330,35 @@ func writeFile(client *sftp.Client, fileName, contents string) error {
 		return err
 	}
 	return f.Close()
+}
+
+// Test that an upload cut off by the connection dropping is discarded
+// rather than stored as if it were complete.
+func TestFilewriteConnectionDropped(t *testing.T) {
+	vfsOpt := vfscommon.Opt
+	conn := startTestSSHClient(t, &vfsOpt)
+	client, err := sftp.NewClient(conn)
+	require.NoError(t, err)
+	f, err := client.OpenFile("file.bin", os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	require.NoError(t, err)
+	_, err = f.Write(make([]byte, 1024*1024))
+	require.NoError(t, err)
+
+	// Drop the connection with the file still open
+	require.NoError(t, conn.Close())
+
+	conn2, err := ssh.Dial("tcp", conn.RemoteAddr().String(), &ssh.ClientConfig{
+		User:            testUser,
+		Auth:            []ssh.AuthMethod{ssh.Password(testPass)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	})
+	require.NoError(t, err)
+	defer func() { _ = conn2.Close() }()
+	client2, err := sftp.NewClient(conn2)
+	require.NoError(t, err)
+	defer func() { _ = client2.Close() }()
+	assert.Eventually(t, func() bool {
+		_, err := client2.Stat("file.bin")
+		return errors.Is(err, os.ErrNotExist)
+	}, 10*time.Second, 50*time.Millisecond, "partial upload was stored")
 }

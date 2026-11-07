@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -48,6 +49,10 @@ var OptionsInfo = fs.Options{{
 	Name:    "disable_zip",
 	Default: false,
 	Help:    "Disable zip download of directories",
+}, {
+	Name:    "disable_depth_infinity",
+	Default: false,
+	Help:    "Reject PROPFIND requests for a whole directory tree (Depth: infinity)",
 }}.
 	Add(libhttp.ConfigInfo).
 	Add(libhttp.AuthConfigInfo).
@@ -55,12 +60,13 @@ var OptionsInfo = fs.Options{{
 
 // Options required for http server
 type Options struct {
-	Auth           libhttp.AuthConfig
-	HTTP           libhttp.Config
-	Template       libhttp.TemplateConfig
-	EtagHash       string `config:"etag_hash"`
-	DisableDirList bool   `config:"disable_dir_list"`
-	DisableZip     bool   `config:"disable_zip"`
+	Auth                 libhttp.AuthConfig
+	HTTP                 libhttp.Config
+	Template             libhttp.TemplateConfig
+	EtagHash             string `config:"etag_hash"`
+	DisableDirList       bool   `config:"disable_dir_list"`
+	DisableZip           bool   `config:"disable_zip"`
+	DisableDepthInfinity bool   `config:"disable_depth_infinity"`
 }
 
 // Opt is options set by command line flags
@@ -120,6 +126,15 @@ If this flag is set to "auto" then rclone will choose the first
 supported hash on the backend or you can use a named hash such as
 "MD5" or "SHA-1". Use the [hashsum](/commands/rclone_hashsum/) command
 to see the full list.
+
+#### --disable-depth-infinity
+
+A PROPFIND request with ` + "`Depth: infinity`" + `, or with no Depth header,
+lists the whole directory tree in a single response. On a big tree this
+reads every directory and keeps all of them in the directory cache, which
+can use a lot of memory. With this flag such requests are rejected with
+a 403 Forbidden and a ` + "`propfind-finite-depth`" + ` error, as RFC 4918
+allows, so clients list one level at a time with ` + "`Depth: 1`" + `.
 
 ### Gzip compression
 
@@ -420,6 +435,16 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
+	if w.opt.DisableDepthInfinity && r.Method == "PROPFIND" {
+		// The webdav handler treats a missing Depth as infinity
+		if depth := r.Header.Get("Depth"); depth == "" || depth == "infinity" {
+			fs.Infof(urlPath, "%s with Depth infinity from %s rejected", r.Method, r.RemoteAddr)
+			rw.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			rw.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(rw, `<?xml version="1.0" encoding="utf-8"?>`+"\n"+`<D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>`)
+			return
+		}
+	}
 	isDir := strings.HasSuffix(urlPath, "/")
 	remote := strings.Trim(urlPath, "/")
 	if !w.opt.DisableDirList && (r.Method == "GET" || r.Method == "HEAD") && isDir {
@@ -431,6 +456,11 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	// Remove when the above bug is fixed.
 	if (r.Method == "COPY" || r.Method == "MOVE") && r.Header.Get("Overwrite") == "" {
 		r.Header.Set("Overwrite", "T")
+	}
+	if r.Method == "PUT" {
+		body := &putBody{ReadCloser: r.Body}
+		r.Body = body
+		r = r.WithContext(context.WithValue(r.Context(), putBodyKey{}, body))
 	}
 	// Add URL Prefix back to path since webdavhandler needs to
 	// return absolute references.
@@ -620,11 +650,40 @@ func (w *WebDAV) Stat(ctx context.Context, name string) (fi os.FileInfo, err err
 	return FileInfo{FileInfo: fi, w: w}, nil
 }
 
+// putBody is the body of a PUT request, recording the error reading it
+type putBody struct {
+	io.ReadCloser
+	err error
+}
+
+// putBodyKey is the context key for the putBody of a PUT request
+type putBodyKey struct{}
+
+func (b *putBody) Read(p []byte) (n int, err error) {
+	n, err = b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
 // Handle represents an open file
 type Handle struct {
 	vfs.Handle
 	w   *WebDAV
 	ctx context.Context
+}
+
+// Close closes the file. The webdav handler closes it normally even if
+// the body of the PUT writing it failed, so abandon the write then, so the
+// part received isn't stored as if it were the whole file.
+func (h Handle) Close() error {
+	if body, ok := h.ctx.Value(putBodyKey{}).(*putBody); ok && body.err != nil {
+		if aborter, ok := h.Handle.(interface{ CloseWithError(error) error }); ok {
+			return aborter.CloseWithError(body.err)
+		}
+	}
+	return h.Handle.Close()
 }
 
 // Readdir reads directory entries from the handle

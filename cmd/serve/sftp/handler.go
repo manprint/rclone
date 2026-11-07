@@ -45,6 +45,15 @@ func (h recoveringHandle) Close() (err error) {
 	return h.Handle.Close()
 }
 
+// TransferError is called by pkg/sftp if the connection fails with the
+// file open. It abandons a streaming write so the part received isn't
+// stored as if it were the whole file.
+func (h recoveringHandle) TransferError(err error) {
+	if aborter, ok := h.Handle.(interface{ CloseWithError(error) error }); ok {
+		_ = aborter.CloseWithError(err)
+	}
+}
+
 // vfsHandler converts the VFS to be served by SFTP
 type vfsHandler struct {
 	*vfs.VFS

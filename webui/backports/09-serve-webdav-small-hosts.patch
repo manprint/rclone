@@ -1,0 +1,258 @@
+From e75637f1c2ddaf64dee760a400e9aa82dc81350b Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Sat, 7 Nov 2026 15:24:14 +0100
+Subject: [PATCH] serve webdav: stop deep listings and cut off uploads hurting
+ small hosts (backport)
+
+A PROPFIND with Depth: infinity, or with no Depth header, lists the
+whole tree in one response. On a big tree this reads every directory
+into the directory cache, using memory in proportion to the number of
+files, which can run a small host out of memory.
+
+With --disable-depth-infinity these requests are rejected with 403 and
+a propfind-finite-depth error, as allowed by RFC 4918, and clients list
+one level at a time with Depth: 1. The default is unchanged.
+
+When the body of a PUT was cut off part way, for example because the
+client was killed mid-stream, the webdav handler closed the file
+normally and the part received was stored as if it were the whole
+file. The write is now abandoned instead, so the upload fails and the
+partial file is discarded.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmd/serve/webdav/webdav.go      | 71 +++++++++++++++++++++++++---
+ cmd/serve/webdav/webdav_test.go | 82 +++++++++++++++++++++++++++++++++
+ 2 files changed, 147 insertions(+), 6 deletions(-)
+
+diff --git a/cmd/serve/webdav/webdav.go b/cmd/serve/webdav/webdav.go
+index 376f1f3ff..4b9aea087 100644
+--- a/cmd/serve/webdav/webdav.go
++++ b/cmd/serve/webdav/webdav.go
+@@ -5,6 +5,7 @@ import (
+ 	"context"
+ 	"encoding/xml"
+ 	"fmt"
++	"io"
+ 	"mime"
+ 	"net"
+ 	"net/http"
+@@ -48,6 +49,10 @@ var OptionsInfo = fs.Options{{
+ 	Name:    "disable_zip",
+ 	Default: false,
+ 	Help:    "Disable zip download of directories",
++}, {
++	Name:    "disable_depth_infinity",
++	Default: false,
++	Help:    "Reject PROPFIND requests for a whole directory tree (Depth: infinity)",
+ }}.
+ 	Add(libhttp.ConfigInfo).
+ 	Add(libhttp.AuthConfigInfo).
+@@ -55,12 +60,13 @@ var OptionsInfo = fs.Options{{
+ 
+ // Options required for http server
+ type Options struct {
+-	Auth           libhttp.AuthConfig
+-	HTTP           libhttp.Config
+-	Template       libhttp.TemplateConfig
+-	EtagHash       string `config:"etag_hash"`
+-	DisableDirList bool   `config:"disable_dir_list"`
+-	DisableZip     bool   `config:"disable_zip"`
++	Auth                 libhttp.AuthConfig
++	HTTP                 libhttp.Config
++	Template             libhttp.TemplateConfig
++	EtagHash             string `config:"etag_hash"`
++	DisableDirList       bool   `config:"disable_dir_list"`
++	DisableZip           bool   `config:"disable_zip"`
++	DisableDepthInfinity bool   `config:"disable_depth_infinity"`
+ }
+ 
+ // Opt is options set by command line flags
+@@ -121,6 +127,15 @@ supported hash on the backend or you can use a named hash such as
+ "MD5" or "SHA-1". Use the [hashsum](/commands/rclone_hashsum/) command
+ to see the full list.
+ 
++#### --disable-depth-infinity
++
++A PROPFIND request with ` + "`Depth: infinity`" + `, or with no Depth header,
++lists the whole directory tree in a single response. On a big tree this
++reads every directory and keeps all of them in the directory cache, which
++can use a lot of memory. With this flag such requests are rejected with
++a 403 Forbidden and a ` + "`propfind-finite-depth`" + ` error, as RFC 4918
++allows, so clients list one level at a time with ` + "`Depth: 1`" + `.
++
+ ### Gzip compression
+ 
+ The server will compress certain response bodies (text and XML, including
+@@ -417,6 +432,16 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+ 		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+ 		return
+ 	}
++	if w.opt.DisableDepthInfinity && r.Method == "PROPFIND" {
++		// The webdav handler treats a missing Depth as infinity
++		if depth := r.Header.Get("Depth"); depth == "" || depth == "infinity" {
++			fs.Infof(urlPath, "%s with Depth infinity from %s rejected", r.Method, r.RemoteAddr)
++			rw.Header().Set("Content-Type", "application/xml; charset=utf-8")
++			rw.WriteHeader(http.StatusForbidden)
++			_, _ = io.WriteString(rw, `<?xml version="1.0" encoding="utf-8"?>`+"\n"+`<D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>`)
++			return
++		}
++	}
+ 	isDir := strings.HasSuffix(urlPath, "/")
+ 	remote := strings.Trim(urlPath, "/")
+ 	if !w.opt.DisableDirList && (r.Method == "GET" || r.Method == "HEAD") && isDir {
+@@ -429,6 +454,11 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+ 	if (r.Method == "COPY" || r.Method == "MOVE") && r.Header.Get("Overwrite") == "" {
+ 		r.Header.Set("Overwrite", "T")
+ 	}
++	if r.Method == "PUT" {
++		body := &putBody{ReadCloser: r.Body}
++		r.Body = body
++		r = r.WithContext(context.WithValue(r.Context(), putBodyKey{}, body))
++	}
+ 	// Add URL Prefix back to path since webdavhandler needs to
+ 	// return absolute references.
+ 	r.URL.Path = w.opt.HTTP.BaseURL + r.URL.Path
+@@ -617,6 +647,23 @@ func (w *WebDAV) Stat(ctx context.Context, name string) (fi os.FileInfo, err err
+ 	return FileInfo{FileInfo: fi, w: w}, nil
+ }
+ 
++// putBody is the body of a PUT request, recording the error reading it
++type putBody struct {
++	io.ReadCloser
++	err error
++}
++
++// putBodyKey is the context key for the putBody of a PUT request
++type putBodyKey struct{}
++
++func (b *putBody) Read(p []byte) (n int, err error) {
++	n, err = b.ReadCloser.Read(p)
++	if err != nil && err != io.EOF {
++		b.err = err
++	}
++	return n, err
++}
++
+ // Handle represents an open file
+ type Handle struct {
+ 	vfs.Handle
+@@ -624,6 +671,18 @@ type Handle struct {
+ 	ctx context.Context
+ }
+ 
++// Close closes the file. The webdav handler closes it normally even if
++// the body of the PUT writing it failed, so abandon the write then, so the
++// part received isn't stored as if it were the whole file.
++func (h Handle) Close() error {
++	if body, ok := h.ctx.Value(putBodyKey{}).(*putBody); ok && body.err != nil {
++		if aborter, ok := h.Handle.(interface{ CloseWithError(error) error }); ok {
++			return aborter.CloseWithError(body.err)
++		}
++	}
++	return h.Handle.Close()
++}
++
+ // Readdir reads directory entries from the handle
+ func (h Handle) Readdir(count int) (fis []os.FileInfo, err error) {
+ 	fis, err = h.Handle.Readdir(count)
+diff --git a/cmd/serve/webdav/webdav_test.go b/cmd/serve/webdav/webdav_test.go
+index 8b10c9890..7195b3167 100644
+--- a/cmd/serve/webdav/webdav_test.go
++++ b/cmd/serve/webdav/webdav_test.go
+@@ -16,6 +16,7 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"testing"
+ 
+@@ -723,3 +724,84 @@ func testPathTraversal(t *testing.T, baseURL string) {
+ 		fstest.NewItem("served-root/dir/inside-dir.txt", "INSIDE DIR", modTime),
+ 	}, []string{"served-root", "served-root/dir"}, fs.GetModifyWindow(ctx, outside))
+ }
++
++func TestDisableDepthInfinity(t *testing.T) {
++	ctx := context.Background()
++	f, err := fs.NewFs(ctx, ":memory:webdav-depth-test")
++	require.NoError(t, err)
++	_, err = operations.Rcat(ctx, f, "dir/file.txt", io.NopCloser(strings.NewReader("DATA")), fstest.Time("2001-02-03T04:05:06Z"), nil)
++	require.NoError(t, err)
++
++	for _, disable := range []bool{false, true} {
++		t.Run("DisableDepthInfinity="+strconv.FormatBool(disable), func(t *testing.T) {
++			opt := Opt
++			opt.HTTP.ListenAddr = []string{"localhost:0"}
++			opt.DisableDepthInfinity = disable
++			w, err := newWebDAV(ctx, f, &opt, &vfscommon.Opt, &proxy.Opt)
++			require.NoError(t, err)
++			w.server.Serve()
++			defer func() {
++				assert.NoError(t, w.Shutdown())
++			}()
++			for _, depth := range []string{"", "infinity", "1", "0"} {
++				req := httptest.NewRequest("PROPFIND", "/", nil)
++				if depth != "" {
++					req.Header.Set("Depth", depth)
++				}
++				rec := httptest.NewRecorder()
++				w.server.Router().ServeHTTP(rec, req)
++				if disable && (depth == "" || depth == "infinity") {
++					assert.Equal(t, http.StatusForbidden, rec.Code, "Depth %q", depth)
++					assert.Contains(t, rec.Body.String(), "<D:propfind-finite-depth/>", "Depth %q", depth)
++				} else {
++					assert.Equal(t, http.StatusMultiStatus, rec.Code, "Depth %q", depth)
++					assert.Equal(t, depth == "" || depth == "infinity", strings.Contains(rec.Body.String(), "file.txt"), "Depth %q", depth)
++				}
++			}
++		})
++	}
++}
++
++// cutOffReader returns n bytes then fails like a request body cut off by
++// the connection dropping
++type cutOffReader struct{ n int }
++
++func (r *cutOffReader) Read(p []byte) (int, error) {
++	if r.n <= 0 {
++		return 0, io.ErrUnexpectedEOF
++	}
++	p = p[:min(len(p), r.n)]
++	r.n -= len(p)
++	return len(p), nil
++}
++
++// Test that a PUT whose body is cut off doesn't store the part received
++// as if it were the whole file
++func TestPutCutOff(t *testing.T) {
++	ctx := context.Background()
++	f, err := fs.NewFs(ctx, ":memory:webdav-put-cut-off")
++	require.NoError(t, err)
++	_, err = operations.Rcat(ctx, f, "old.txt", io.NopCloser(strings.NewReader("OLD")), fstest.Time("2001-02-03T04:05:06Z"), nil)
++	require.NoError(t, err)
++
++	opt := Opt
++	opt.HTTP.ListenAddr = []string{"localhost:0"}
++	w, err := newWebDAV(ctx, f, &opt, &vfscommon.Opt, &proxy.Opt)
++	require.NoError(t, err)
++	w.server.Serve()
++	defer func() {
++		assert.NoError(t, w.Shutdown())
++	}()
++
++	for _, name := range []string{"new.txt", "old.txt"} {
++		req := httptest.NewRequest("PUT", "/"+name, &cutOffReader{n: 1024 * 1024})
++		rec := httptest.NewRecorder()
++		w.server.Router().ServeHTTP(rec, req)
++		assert.GreaterOrEqual(t, rec.Code, 400, name)
++	}
++	_, err = f.NewObject(ctx, "new.txt")
++	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
++	o, err := f.NewObject(ctx, "old.txt")
++	require.NoError(t, err)
++	assert.Equal(t, int64(3), o.Size())
++}
+-- 
+2.53.0
+

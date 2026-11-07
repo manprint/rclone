@@ -31,7 +31,9 @@ https://github.com/manprint/rclone/releases; l'immagine dell'ultima release è
 | Documento | Contenuto |
 |-----------|-----------|
 | [uso.md](uso.md) | Guida d'uso: avvio, flag, interfaccia, client WebDAV, ripresa della riproduzione, ricerca, link di download e pubblici, sicurezza, limiti noti |
-| [serve-s3.md](serve-s3.md) | `serve s3` su host da 1 GB / 1 CPU con oggetti grandi: correzioni (backport `07-serve-s3-small-hosts`), flag consigliati per dimensione dei file, esempi dei client, misure |
+| [serve-s3.md](serve-s3.md) | `serve s3` su host da 1 GB / 1 CPU con oggetti grandi: correzioni (backport `07-serve-s3-small-hosts`), flag consigliati per dimensione dei file, esempi dei client, backup in streaming con `rcat`, misure |
+| [serve-webdav.md](serve-webdav.md) | `serve webdav` su host da 1 GB / 1 CPU: timeout dei trasferimenti lunghi (backport `08-http-progress-timeouts`), `--disable-depth-infinity` e upload interrotti (backport `09-serve-webdav-small-hosts`, `11-vfs-failed-stream-uploads`), backup in streaming con `rcat`, flag consigliati, misure |
+| [serve-sftp.md](serve-sftp.md) | `serve sftp` su host da 1 GB / 1 CPU: dove va la CPU, flag del server e dei client (hash, cifrari, buffer), upload interrotti (backport `10-serve-sftp-dropped-uploads`, `11-vfs-failed-stream-uploads`), backup in streaming con `rcat`, misure |
 | [build.md](build.md) | Build locale del binario e dell'immagine Docker (`build.sh`, `just`) |
 | [../docker-serve-webdav/](../docker-serve-webdav/README.md) | Docker compose pronto per `serve webdav`: `.env` con tutte le variabili, template di `rclone.conf`, guida |
 | [ci-e-release.md](ci-e-release.md) | CI del fork, binari, immagini, attivazione e procedura di release |
@@ -53,7 +55,7 @@ tutto ciò che è del fork sta in file e cartelle che upstream non ha.
 | `.github/workflows/fork-*.yml` | La CI del fork, generata dai workflow upstream da `webui/scripts/gen-ci.py` |
 | `fork-doc/` | Questa documentazione, l'analisi e il piano |
 | `docker-serve-webdav/` | Docker compose, `.env` e template di `rclone.conf` per usare l'immagine con `serve webdav` |
-| `cmd/serve/webdav/webdav.go` | L'unico file upstream toccato dal codice del fork: tre righe aggiunte, marcate `// fork:webui`, nessuna riga cambiata |
+| `cmd/serve/webdav/webdav.go` | L'unico file upstream toccato dal codice del fork, oltre ai backport: tre righe aggiunte, marcate `// fork:webui`, nessuna riga cambiata |
 | `webui/backports/*.patch` | Le correzioni upstream portate nel fork prima che upstream le unisca (backport), una patch per correzione; i file upstream che toccano sono ammessi solo se coincidono con la patch |
 
 Restano come upstream, tra gli altri, `go.mod` e `go.sum` (nessuna dipendenza nuova), `Makefile`,

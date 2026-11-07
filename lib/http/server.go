@@ -9,15 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/lib/atexit"
@@ -45,8 +48,10 @@ or just by using an absolute path name.
 Socket activation, described further below, can also be used to accomplish the same.
 
 ` + "`--{{ .Prefix }}server-read-timeout` and `--{{ .Prefix }}server-write-timeout`" + ` can be used to
-control the timeouts on the server.  Note that this is the total time
-for a transfer.
+control the timeouts on the server.  They limit how long a transfer can
+go without progress: the deadlines are pushed back each time some of
+the request body is read or some of the response is written, so big
+transfers can take longer than the timeouts.
 
 ` + "`--{{ .Prefix }}max-header-bytes`" + ` controls the maximum number of bytes the server will
 accept in the HTTP header.
@@ -302,7 +307,7 @@ func newInstance(ctx context.Context, s *Server, listener net.Listener, tlsCfg *
 	}
 
 	httpServer := &http.Server{
-		Handler:           s.mux,
+		Handler:           progressDeadlines(s.mux, time.Duration(s.cfg.ServerReadTimeout), time.Duration(s.cfg.ServerWriteTimeout)),
 		ReadTimeout:       time.Duration(s.cfg.ServerReadTimeout),
 		WriteTimeout:      time.Duration(s.cfg.ServerWriteTimeout),
 		MaxHeaderBytes:    s.cfg.MaxHeaderBytes,
@@ -325,6 +330,82 @@ func newInstance(ctx context.Context, s *Server, listener net.Listener, tlsCfg *
 		listener:   listener,
 		httpServer: httpServer,
 	}
+}
+
+// progressDeadlines pushes back the read and write deadlines which
+// http.Server sets from the start of each request while the transfer
+// makes progress.
+func progressDeadlines(next http.Handler, readTimeout, writeTimeout time.Duration) http.Handler {
+	if readTimeout <= 0 && writeTimeout <= 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d := &deadlines{rc: http.NewResponseController(w), readTimeout: readTimeout, writeTimeout: writeTimeout}
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = &deadlineBody{ReadCloser: r.Body, d: d}
+		}
+		if writeTimeout > 0 {
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			ww.Tee(deadlineWriter{d: d})
+			w = ww
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// deadlines holds the state of progressDeadlines for one request
+type deadlines struct {
+	rc           *http.ResponseController
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+	lastRead     atomic.Int64 // UnixNano of the last read deadline set
+	lastWrite    atomic.Int64 // UnixNano of the last write deadline set
+}
+
+// extend sets a deadline timeout from now, at most every min(timeout/4, 1s)
+func extend(last *atomic.Int64, timeout time.Duration, set func(time.Time) error) {
+	if timeout <= 0 {
+		return
+	}
+	now := time.Now()
+	if now.UnixNano()-last.Load() < int64(min(timeout/4, time.Second)) {
+		return
+	}
+	last.Store(now.UnixNano())
+	_ = set(now.Add(timeout))
+}
+
+// deadlineBody pushes back the deadlines while the request body is read
+type deadlineBody struct {
+	io.ReadCloser
+	d *deadlines
+}
+
+// Read reads from the body and pushes back the deadlines on progress
+func (b *deadlineBody) Read(p []byte) (n int, err error) {
+	n, err = b.ReadCloser.Read(p)
+	// Once the body returns an error (including EOF) the server may be
+	// watching the connection itself with no deadline, and a deadline
+	// set now would cancel the request when it expires.
+	if n > 0 && err == nil {
+		extend(&b.d.lastRead, b.d.readTimeout, b.d.rc.SetReadDeadline)
+		// The response is usually written after the whole body is read
+		extend(&b.d.lastWrite, b.d.writeTimeout, b.d.rc.SetWriteDeadline)
+	}
+	return n, err
+}
+
+// deadlineWriter pushes back the write deadline as the response is written
+type deadlineWriter struct {
+	d *deadlines
+}
+
+// Write is called with the data written to the response
+func (w deadlineWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		extend(&w.d.lastWrite, w.d.writeTimeout, w.d.rc.SetWriteDeadline)
+	}
+	return len(p), nil
 }
 
 // NewServer instantiates a new http server using provided listeners and options

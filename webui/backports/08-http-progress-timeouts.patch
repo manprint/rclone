@@ -1,0 +1,306 @@
+From 5d4ddfa9df6ef857669acb4d554f91df8b673da2 Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Sat, 7 Nov 2026 14:05:43 +0100
+Subject: [PATCH] lib/http: stop server timeouts cutting off long uploads and
+ downloads (backport)
+
+--server-read-timeout and --server-write-timeout were applied from the
+start of each request, so with the default of 1h any single upload or
+download taking longer than an hour was cut off, for example a big file
+over serve webdav, serve http or serve s3 on a slow link.
+
+The timeouts now limit how long a transfer can go without progress: the
+deadlines are pushed back each time some of the request body is read or
+some of the response is written. A stalled transfer is still cut off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ lib/http/server.go              |  87 ++++++++++++++++++-
+ lib/http/server_timeout_test.go | 147 ++++++++++++++++++++++++++++++++
+ 2 files changed, 231 insertions(+), 3 deletions(-)
+ create mode 100644 lib/http/server_timeout_test.go
+
+diff --git a/lib/http/server.go b/lib/http/server.go
+index 512ff1e0d..d0c39108f 100644
+--- a/lib/http/server.go
++++ b/lib/http/server.go
+@@ -9,15 +9,18 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"html/template"
++	"io"
+ 	"net"
+ 	"net/http"
+ 	"os"
+ 	"path/filepath"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/go-chi/chi/v5"
++	"github.com/go-chi/chi/v5/middleware"
+ 	"github.com/rclone/rclone/fs"
+ 	"github.com/rclone/rclone/fs/config/flags"
+ 	"github.com/rclone/rclone/lib/atexit"
+@@ -45,8 +48,10 @@ or just by using an absolute path name.
+ Socket activation, described further below, can also be used to accomplish the same.
+ 
+ ` + "`--{{ .Prefix }}server-read-timeout` and `--{{ .Prefix }}server-write-timeout`" + ` can be used to
+-control the timeouts on the server.  Note that this is the total time
+-for a transfer.
++control the timeouts on the server.  They limit how long a transfer can
++go without progress: the deadlines are pushed back each time some of
++the request body is read or some of the response is written, so big
++transfers can take longer than the timeouts.
+ 
+ ` + "`--{{ .Prefix }}max-header-bytes`" + ` controls the maximum number of bytes the server will
+ accept in the HTTP header.
+@@ -302,7 +307,7 @@ func newInstance(ctx context.Context, s *Server, listener net.Listener, tlsCfg *
+ 	}
+ 
+ 	httpServer := &http.Server{
+-		Handler:           s.mux,
++		Handler:           progressDeadlines(s.mux, time.Duration(s.cfg.ServerReadTimeout), time.Duration(s.cfg.ServerWriteTimeout)),
+ 		ReadTimeout:       time.Duration(s.cfg.ServerReadTimeout),
+ 		WriteTimeout:      time.Duration(s.cfg.ServerWriteTimeout),
+ 		MaxHeaderBytes:    s.cfg.MaxHeaderBytes,
+@@ -327,6 +332,82 @@ func newInstance(ctx context.Context, s *Server, listener net.Listener, tlsCfg *
+ 	}
+ }
+ 
++// progressDeadlines pushes back the read and write deadlines which
++// http.Server sets from the start of each request while the transfer
++// makes progress.
++func progressDeadlines(next http.Handler, readTimeout, writeTimeout time.Duration) http.Handler {
++	if readTimeout <= 0 && writeTimeout <= 0 {
++		return next
++	}
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		d := &deadlines{rc: http.NewResponseController(w), readTimeout: readTimeout, writeTimeout: writeTimeout}
++		if r.Body != nil && r.Body != http.NoBody {
++			r.Body = &deadlineBody{ReadCloser: r.Body, d: d}
++		}
++		if writeTimeout > 0 {
++			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
++			ww.Tee(deadlineWriter{d: d})
++			w = ww
++		}
++		next.ServeHTTP(w, r)
++	})
++}
++
++// deadlines holds the state of progressDeadlines for one request
++type deadlines struct {
++	rc           *http.ResponseController
++	readTimeout  time.Duration
++	writeTimeout time.Duration
++	lastRead     atomic.Int64 // UnixNano of the last read deadline set
++	lastWrite    atomic.Int64 // UnixNano of the last write deadline set
++}
++
++// extend sets a deadline timeout from now, at most every min(timeout/4, 1s)
++func extend(last *atomic.Int64, timeout time.Duration, set func(time.Time) error) {
++	if timeout <= 0 {
++		return
++	}
++	now := time.Now()
++	if now.UnixNano()-last.Load() < int64(min(timeout/4, time.Second)) {
++		return
++	}
++	last.Store(now.UnixNano())
++	_ = set(now.Add(timeout))
++}
++
++// deadlineBody pushes back the deadlines while the request body is read
++type deadlineBody struct {
++	io.ReadCloser
++	d *deadlines
++}
++
++// Read reads from the body and pushes back the deadlines on progress
++func (b *deadlineBody) Read(p []byte) (n int, err error) {
++	n, err = b.ReadCloser.Read(p)
++	// Once the body returns an error (including EOF) the server may be
++	// watching the connection itself with no deadline, and a deadline
++	// set now would cancel the request when it expires.
++	if n > 0 && err == nil {
++		extend(&b.d.lastRead, b.d.readTimeout, b.d.rc.SetReadDeadline)
++		// The response is usually written after the whole body is read
++		extend(&b.d.lastWrite, b.d.writeTimeout, b.d.rc.SetWriteDeadline)
++	}
++	return n, err
++}
++
++// deadlineWriter pushes back the write deadline as the response is written
++type deadlineWriter struct {
++	d *deadlines
++}
++
++// Write is called with the data written to the response
++func (w deadlineWriter) Write(p []byte) (int, error) {
++	if len(p) > 0 {
++		extend(&w.d.lastWrite, w.d.writeTimeout, w.d.rc.SetWriteDeadline)
++	}
++	return len(p), nil
++}
++
+ // NewServer instantiates a new http server using provided listeners and options
+ // This function is provided if the default http server does not meet a services requirements and should not generally be used
+ // A http server can listen using multiple listeners. For example, a listener for port 80, and a listener for port 443.
+diff --git a/lib/http/server_timeout_test.go b/lib/http/server_timeout_test.go
+new file mode 100644
+index 000000000..e9c954529
+--- /dev/null
++++ b/lib/http/server_timeout_test.go
+@@ -0,0 +1,147 @@
++package http
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/rclone/rclone/fs"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++)
++
++const (
++	testTimeout   = 500 * time.Millisecond
++	testChunkGap  = 50 * time.Millisecond
++	testChunks    = 30 // testChunks*testChunkGap is 3 timeouts
++	testChunkSize = 64 * 1024
++)
++
++// testTimeoutServer starts a server with short read and write timeouts
++func testTimeoutServer(t *testing.T, handler http.HandlerFunc) string {
++	cfg := DefaultCfg()
++	cfg.ListenAddr = []string{"127.0.0.1:0"}
++	cfg.ServerReadTimeout = fs.Duration(testTimeout)
++	cfg.ServerWriteTimeout = fs.Duration(testTimeout)
++	s, err := NewServer(context.Background(), WithConfig(cfg))
++	require.NoError(t, err)
++	t.Cleanup(func() { require.NoError(t, s.Shutdown()) })
++	s.Router().Handle("/", handler)
++	s.Serve()
++	return testGetServerURL(t, s)
++}
++
++func testTimeoutClients() map[string]*http.Client {
++	var h2c http.Protocols
++	h2c.SetUnencryptedHTTP2(true)
++	return map[string]*http.Client{
++		"HTTP1": {Transport: &http.Transport{}},
++		"H2C":   {Transport: &http.Transport{Protocols: &h2c}},
++	}
++}
++
++// slowBody sends chunks with a gap between them, stalling forever after stallAfter chunks if it is > 0
++func slowBody(ctx context.Context, chunks, stallAfter int) io.ReadCloser {
++	pr, pw := io.Pipe()
++	go func() {
++		chunk := make([]byte, testChunkSize)
++		for i := range chunks {
++			if stallAfter > 0 && i == stallAfter {
++				<-ctx.Done()
++				_ = pw.CloseWithError(ctx.Err())
++				return
++			}
++			time.Sleep(testChunkGap)
++			if _, err := pw.Write(chunk); err != nil {
++				return
++			}
++		}
++		_ = pw.Close()
++	}()
++	return pr
++}
++
++// A slow upload which keeps making progress takes longer than the server timeouts
++func TestServerTimeoutSlowUpload(t *testing.T) {
++	url := testTimeoutServer(t, func(w http.ResponseWriter, r *http.Request) {
++		n, err := io.Copy(io.Discard, r.Body)
++		if err != nil {
++			http.Error(w, err.Error(), http.StatusBadRequest)
++			return
++		}
++		_, _ = w.Write([]byte(fs.SizeSuffix(n).String()))
++	})
++	for name, client := range testTimeoutClients() {
++		t.Run(name, func(t *testing.T) {
++			req, err := http.NewRequest("PUT", url, slowBody(t.Context(), testChunks, 0))
++			require.NoError(t, err)
++			resp, err := client.Do(req)
++			require.NoError(t, err)
++			defer func() { _ = resp.Body.Close() }()
++			assert.Equal(t, http.StatusOK, resp.StatusCode)
++			testExpectRespBody(t, resp, []byte(fs.SizeSuffix(testChunks*testChunkSize).String()))
++		})
++	}
++}
++
++// A slow download which keeps making progress takes longer than the server timeouts
++func TestServerTimeoutSlowDownload(t *testing.T) {
++	url := testTimeoutServer(t, func(w http.ResponseWriter, r *http.Request) {
++		chunk := make([]byte, testChunkSize)
++		for range testChunks {
++			time.Sleep(testChunkGap)
++			if _, err := w.Write(chunk); err != nil {
++				return
++			}
++			_ = http.NewResponseController(w).Flush()
++		}
++	})
++	for name, client := range testTimeoutClients() {
++		t.Run(name, func(t *testing.T) {
++			resp, err := client.Get(url)
++			require.NoError(t, err)
++			defer func() { _ = resp.Body.Close() }()
++			assert.Equal(t, http.StatusOK, resp.StatusCode)
++			n, err := io.Copy(io.Discard, resp.Body)
++			require.NoError(t, err)
++			assert.Equal(t, int64(testChunks*testChunkSize), n)
++		})
++	}
++}
++
++// An upload which stops making progress is still cut off by the read timeout
++func TestServerTimeoutStalledUpload(t *testing.T) {
++	readErr := make(chan error, 2)
++	url := testTimeoutServer(t, func(w http.ResponseWriter, r *http.Request) {
++		_, err := io.Copy(io.Discard, r.Body)
++		readErr <- err
++	})
++	for name, client := range testTimeoutClients() {
++		t.Run(name, func(t *testing.T) {
++			ctx, cancel := context.WithCancel(t.Context())
++			defer cancel()
++			req, err := http.NewRequestWithContext(ctx, "PUT", url, slowBody(ctx, testChunks, 2))
++			require.NoError(t, err)
++			go func() {
++				resp, err := client.Do(req)
++				if err == nil {
++					_ = resp.Body.Close()
++				}
++			}()
++			select {
++			case err := <-readErr:
++				require.Error(t, err)
++				var netErr net.Error
++				if errors.As(err, &netErr) {
++					assert.True(t, netErr.Timeout(), "expecting a timeout, got %v", err)
++				}
++			case <-time.After(10 * testTimeout):
++				t.Fatal("stalled upload was not cut off by the read timeout")
++			}
++		})
++	}
++}
+-- 
+2.53.0
+

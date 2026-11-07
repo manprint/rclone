@@ -74,10 +74,11 @@ s3` while the object's metadata is kept (see below).
 On remotes such as `local`, where the MD5 is computed by reading the
 object, an object whose MD5 isn't kept - after a restart, for
 example - is read in full the first time it is listed or fetched, which
-can take minutes for a big object and outlast the client's timeout. To
-keep the MD5s across restarts serve a [hasher](/hasher/) remote
-wrapping the remote instead, or if clients don't need the `ETag` use
-`--etag-hash ""`.
+can take minutes for a big object and outlast the client's timeout.
+The MD5 is then kept in memory while the object is unchanged, for at
+most `--metadata-max-objects` objects of each user. To keep the MD5s
+across restarts serve a [hasher](/hasher/) remote wrapping the remote
+instead, or if clients don't need the `ETag` use `--etag-hash ""`.
 
 ### Quickstart
 
@@ -416,7 +417,8 @@ make it use unbounded memory.
   `--s3-upload-concurrency`). Plain `PutObject` uploads use the same
   while they are in progress.
 - **Metadata.** The metadata of at most `--metadata-max-objects`
-  objects of each user is kept, each limited to 2 KB.
+  objects of each user is kept, each limited to 2 KB, and on remotes
+  where hashing reads the object the `ETag` of as many again.
 - **Request bodies.** The XML bodies of requests such as
   `CompleteMultipartUpload` and `DeleteObjects` are limited to 10 MiB,
   and `DeleteObjects` to 1000 keys. A browser form (`POST`) upload

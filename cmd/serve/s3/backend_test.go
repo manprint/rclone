@@ -366,6 +366,67 @@ func TestStoredETagNotRehashed(t *testing.T) {
 	}
 }
 
+// TestComputedETagKept checks that the ETag of an object which had to be
+// read to hash it is kept, so it isn't read again once the VFS has
+// forgotten the object, as it does when its directory cache expires.
+func TestComputedETagKept(t *testing.T) {
+	backing := t.TempDir()
+	b, _, bucket := newPutTestBackend(t, backing, nil)
+	ctx := context.Background()
+	data := strings.Repeat("a", 1024)
+	other := strings.Repeat("b", len(data))
+	md5Hex := func(s string) string {
+		sum := md5.Sum([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+	const object = "computed.bin"
+	objPath := filepath.Join(backing, bucket, object)
+	require.NoError(t, os.WriteFile(objPath, []byte(data), 0666))
+	fi, err := os.Stat(objPath)
+	require.NoError(t, err)
+	_vfs, err := b.s.getVFS(ctx)
+	require.NoError(t, err)
+
+	obj, err := b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash))
+
+	// Change the data keeping the size and modification time, then make
+	// the VFS forget the object: the ETag is only that of the new data if
+	// the object was read to hash it again.
+	require.NoError(t, os.WriteFile(objPath, []byte(other), 0666))
+	require.NoError(t, os.Chtimes(objPath, fi.ModTime(), fi.ModTime()))
+	_vfs.FlushDirCache()
+
+	obj, err = b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), "HEAD read the object to hash it")
+	obj, err = b.GetObject(ctx, bucket, object, nil)
+	require.NoError(t, err)
+	require.NoError(t, obj.Contents.Close())
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), "GET read the object to hash it")
+	node, err := _vfs.Stat(bucket + "/" + object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(b.objectHash(ctx, _vfs, bucket+"/"+object, node)), "listing read the object to hash it")
+
+	// An object replaced through serve s3 is hashed again, even with the
+	// same size and modification time.
+	third := strings.Repeat("c", len(data))
+	mtime := fmt.Sprintf("%d.%09d", fi.ModTime().Unix(), fi.ModTime().Nanosecond())
+	_, err = b.PutObject(ctx, bucket, object, map[string]string{"X-Amz-Meta-Mtime": mtime}, strings.NewReader(third), int64(len(third)))
+	require.NoError(t, err)
+	obj, err = b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(third), hex.EncodeToString(obj.Hash))
+
+	// An object changed on the remote is hashed again.
+	require.NoError(t, os.WriteFile(objPath, []byte(other+"c"), 0666))
+	_vfs.FlushDirCache()
+	obj, err = b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(other+"c"), hex.EncodeToString(obj.Hash))
+}
+
 // TestCopyObjectMetadata checks a copy gets exactly the metadata given,
 // as worked out by gofakes3 from the metadata directive, and keeps the
 // source's modification time without adding it to the metadata.

@@ -93,6 +93,11 @@ type tenant struct {
 	// meta is the stored metadata of objects, by object path, and
 	// the directory markers put, by directory path.
 	meta *lru.Cache[string, objectMeta]
+
+	// hashes is the hashes of objects which had to be read to hash
+	// them, by object path, kept apart from meta so they don't push
+	// out metadata which can't be got again.
+	hashes *lru.Cache[string, objectMeta]
 }
 
 // objectMeta is the metadata stored for an object, with the size and
@@ -174,6 +179,7 @@ func (b *s3Backend) tenant(ctx context.Context) *tenant {
 			id:     id,
 			budget: newBufferBudget(int64(b.s.opt.MultipartStreamingBufferTotal)),
 			meta:   newMetadataStore(b.s.opt.MetadataMaxObjects),
+			hashes: newMetadataStore(b.s.opt.MetadataMaxObjects),
 		}
 		b.tenants[id] = t
 	}
@@ -197,7 +203,13 @@ func (t *tenant) context() context.Context {
 // Nothing is returned if the object has changed since the metadata was
 // stored, as it has been replaced by something other than this user.
 func (t *tenant) getMeta(ctx context.Context, fp string, node vfs.Node) (om objectMeta, ok bool) {
-	om, ok = t.meta.Get(fp)
+	return getValidMeta(ctx, t.meta, fp, node)
+}
+
+// getValidMeta returns what store holds for node, the object at fp,
+// unless the object has changed since it was stored.
+func getValidMeta(ctx context.Context, store *lru.Cache[string, objectMeta], fp string, node vfs.Node) (om objectMeta, ok bool) {
+	om, ok = store.Get(fp)
 	if !ok || om.dirMarker || om.noDirMarker || om.size != node.Size() {
 		return objectMeta{}, false
 	}
@@ -227,6 +239,7 @@ func (t *tenant) storeMeta(_vfs *vfs.VFS, fp string, meta map[string]string) (er
 // storeObjectMeta stores om as the metadata of the object at fp in
 // _vfs, as storeMeta does.
 func (t *tenant) storeObjectMeta(_vfs *vfs.VFS, fp string, om objectMeta) (err error) {
+	t.hashes.Remove(fp)
 	meta := om.meta
 	delete(meta, "Last-Modified")
 	mtime, ok := meta["X-Amz-Meta-Mtime"]
@@ -285,6 +298,7 @@ func (b *s3Backend) SetObjectTagging(ctx context.Context, bucketName, objectName
 // directory marker of the directory at fp.
 func (t *tenant) removeMeta(fp string) {
 	t.meta.Remove(fp)
+	t.hashes.Remove(fp)
 }
 
 // storeDirMarker records that a directory marker was put for the
@@ -430,18 +444,13 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
 		"Content-Type":  mimeType,
 	}
 
-	var hash []byte
 	var partSizes []int64
-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
+	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
+	if ok {
 		maps.Copy(meta, om.meta)
-		hash = om.hash
 		partSizes = om.parts.sizes()
 	}
-	if hash == nil {
-		// Only hash the object if its ETag wasn't kept, as on remotes
-		// such as local this reads the whole object
-		hash = getFileHashByte(node, b.s.etagHash(_vfs))
-	}
+	hash := b.etag(ctx, _vfs, fp, node, om, ok)
 
 	return &gofakes3.Object{
 		Name:      objectName,
@@ -528,17 +537,13 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
 		"Content-Type":  mimeType,
 	}
 
-	var hash []byte
 	var partSizes []int64
-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
+	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
+	if ok {
 		maps.Copy(meta, om.meta)
-		hash = om.hash
 		partSizes = om.parts.sizes()
 	}
-	if hash == nil {
-		// As in HeadObject, only hash the object if its ETag wasn't kept
-		hash = getFileHashByte(node, b.s.etagHash(_vfs))
-	}
+	hash := b.etag(ctx, _vfs, fp, node, om, ok)
 
 	return &gofakes3.Object{
 		Name:      objectName,
@@ -789,10 +794,29 @@ func (b *s3Backend) commitObject(ctx context.Context, _vfs *vfs.VFS, tmpFp, fp s
 
 // objectHash returns the hash returned as the ETag of the object at fp.
 func (b *s3Backend) objectHash(ctx context.Context, _vfs *vfs.VFS, fp string, node vfs.Node) []byte {
-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok && om.hash != nil {
+	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
+	return b.etag(ctx, _vfs, fp, node, om, ok)
+}
+
+// etag returns the hash returned as the ETag of the object at fp, given
+// the metadata getMeta returned for it: the ETag kept with it, or failing
+// that the object's hash. On remotes such as local, where hashing reads
+// the whole object, the hash is kept while the object is unchanged so it
+// isn't read again when the VFS forgets the object.
+func (b *s3Backend) etag(ctx context.Context, _vfs *vfs.VFS, fp string, node vfs.Node, om objectMeta, ok bool) []byte {
+	if ok && om.hash != nil {
 		return om.hash
 	}
-	return getFileHashByte(node, b.s.etagHash(_vfs))
+	t := b.tenant(ctx)
+	if kept, ok := getValidMeta(ctx, t.hashes, fp, node); ok {
+		return kept.hash
+	}
+	size, modTime := node.Size(), node.ModTime()
+	hash := getFileHashByte(node, b.s.etagHash(_vfs))
+	if hash != nil && _vfs.Fs().Features().SlowHash {
+		t.hashes.Add(fp, objectMeta{hash: hash, size: size, modTime: modTime})
+	}
+	return hash
 }
 
 // DeleteMulti deletes multiple objects in a single request.

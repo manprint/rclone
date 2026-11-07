@@ -1,13 +1,14 @@
 # `rclone serve webdav` su host piccoli (1 GB / 1 CPU)
 
 Questa guida raccoglie le verifiche su memoria e CPU di `rclone serve webdav` del fork (interfaccia web compresa),
-le correzioni fatte e i flag consigliati. Le correzioni al codice sono in due backport:
+le correzioni fatte e i flag consigliati. Le correzioni al codice sono in tre backport:
 
 - `webui/backports/08-http-progress-timeouts.patch` (`lib/http`, vale anche per `serve http`, `serve s3`,
   `serve restic`, `rcd`);
-- `webui/backports/09-serve-webdav-small-hosts.patch` (`cmd/serve/webdav`).
+- `webui/backports/09-serve-webdav-small-hosts.patch` (`cmd/serve/webdav`);
+- `webui/backports/11-vfs-failed-stream-uploads.patch` (`vfs`, vale per tutti i `serve` e per `mount`).
 
-Tutti i numeri qui sotto sono misurati, con il metodo descritto in [Riprodurre le misure](#8-riprodurre-le-misure).
+Tutti i numeri qui sotto sono misurati, con il metodo descritto in [Riprodurre le misure](#9-riprodurre-le-misure).
 
 ---
 
@@ -19,6 +20,8 @@ Tutti i numeri qui sotto sono misurati, con il metodo descritto in [Riprodurre l
 | `PROPFIND` con `Depth: infinity` o senza `Depth` elenca tutto l'albero in una richiesta | 200.201 voci: 233 MiB di picco e 128 MB di risposta da una sola richiesta | backport 09: nuovo flag `--disable-depth-infinity` (403 `propfind-finite-depth`, RFC 4918); default invariato |
 | MD5 calcolato due volte a ogni upload (`operations.Rcat` e backend `local`) | circa metà della CPU di un PUT | nessuna modifica al core: `--ignore-checksum` sul server (vedi [sezione 4](#4-cpu-degli-upload---ignore-checksum)) |
 | Buffer di lettura di 16 MiB per trasferimento | 16 trasferimenti paralleli: 369 MiB | `--buffer-size 4M --use-mmap`: 80 MiB, stessa velocità |
+| PUT interrotto a metà (client ucciso, connessione caduta) | il pezzo ricevuto restava salvato con il nome finale, come se fosse completo | backport 09: l'upload viene abbandonato e il file parziale cancellato (vedi [sezione 8](#8-backup-in-streaming-rclone-rcat)) |
+| Upload fallito che sostituiva un file esistente | il vecchio file, già cancellato dal backend `local`, restava elencato fino alla scadenza della cache delle cartelle | backport 11: non viene più elencato |
 
 Verificati e lasciati invariati: lo zip delle cartelle dell'interfaccia web (deflate costa poco anche su file già
 compressi), la compressione gzip delle risposte (utile sui PROPFIND, costosa sui file di testo grandi: si spegne
@@ -32,6 +35,13 @@ dal client), l'elenco, la ricerca e l'upload dell'interfaccia web (vedi [sezione
   - `TestServerTimeoutStalledUpload`: upload fermo, interrotto dal timeout.
 - `cmd/serve/webdav/webdav_test.go`, `TestDisableDepthInfinity`: con il flag, `Depth` assente e `infinity`
   danno 403 con `<D:propfind-finite-depth/>`, `0` e `1` danno 207; senza il flag tutti danno 207.
+- `cmd/serve/webdav/webdav_test.go`, `TestPutCutOff`: PUT con il corpo interrotto dopo 1 MiB, su un file nuovo
+  e su uno esistente; il file nuovo non viene creato, quello esistente resta com'era.
+- `vfs/write_test.go`:
+  - `TestWriteFileHandleUploadFailed`: le scritture dopo il fallimento dell'upload, anche fuori ordine,
+    restituiscono l'errore dell'upload;
+  - `TestWriteFileHandleFailedReplace`: un file cancellato da un upload fallito che lo sostituiva non è più
+    elencato, sia con l'upload fallito sia con quello abbandonato.
 
 ---
 
@@ -212,7 +222,94 @@ degli upload) valgono le stesse indicazioni per `--buffer-size`, `--use-mmap`, `
 
 ---
 
-## 8. Riprodurre le misure
+## 8. Backup in streaming (`rclone rcat`)
+
+Caso d'uso: da una VM con 3 GB liberi, `sudo tar -cpzf - mydir | rclone rcat webdav-served:dumps/mydir.tar.gz`
+verso un server da 1 GB / 1 CPU, con un archivio da 27 GB. Né il client né il server devono tenere l'archivio
+in RAM o in un file temporaneo.
+
+### Verifica
+
+Client e server in container `--memory=1g --cpus=1 --read-only`, con `/tmp` in un tmpfs da 64 MiB: qualunque
+copia temporanea dello stream fallirebbe con `no space left on device`. Stream casuale da 1 GiB, md5 del file
+sul server uguale a quello dello stream:
+
+| Server | Tempo | CPU server | Memoria anonima server | Memoria anonima client | CPU client (rclone) |
+|---|---|---|---|---|---|
+| default | 22 s | 7,4 s | 27 MiB | 21 MiB | 3,3 s |
+| `--ignore-checksum` | 21 s | 3,5 s | 24 MiB | 21 MiB | 3,0 s |
+
+- `/tmp` resta vuoto su client e server; sul disco del server c'è un solo file, grande quanto la parte ricevuta.
+- La memoria, misurata fino a 1 GiB, è piatta: con 256 MiB era 23 MiB sul server e 17 MiB sul client. Su
+  entrambi i lati i dati passano per buffer di dimensione fissa, quindi per l'archivio da 27 GB ci si aspetta
+  lo stesso; sul disco del server serve solo lo spazio del file.
+- Il tempo è limitato dalla CPU del container client, condivisa con la generazione dei dati e l'md5 di
+  controllo.
+- Lo stream da 27 GB dura più di un'ora a 50 Mbit/s: senza il backport 08 veniva troncato (vedi
+  [sezione 2](#2-timeout-dei-trasferimenti)).
+
+### Requisiti
+
+- **Client: `vendor = rclone`.** Il backend webdav carica uno stream di dimensione sconosciuta solo con i
+  vendor `rclone`, `owncloud` e `fastmail`; con gli altri (`other`, `nextcloud`, ...) `rcat` copia prima
+  tutto lo stream in `$TMPDIR`, e con 3 GB liberi fallisce con
+  `failed to copy to temporary spool file: ... no space left on device`. Il messaggio
+  `no hashes in common; falling back to --size-only` è normale.
+- **Server: `--vfs-cache-mode off`** (default). Con `writes` o `full` il PUT viene scritto prima nella cache e
+  poi copiato nella destinazione: serve il doppio dello spazio, e con la cache piena il client riceve
+  `405 Method Not Allowed`. Il README di `docker-serve-webdav` propone `full` per l'interfaccia web: per i
+  backup serve un'istanza separata con la cache spenta.
+
+### Errori e interruzioni
+
+| Caso | Cosa succede |
+|---|---|
+| client ucciso o connessione caduta a metà | il file parziale viene cancellato (backport 09; prima restava salvato come completo) |
+| disco del server pieno | il client riceve `405 Method Not Allowed` e il file parziale viene cancellato; la causa (`no space left on device`) è solo nel log del server, perché il gestore WebDAV risponde sempre 405 quando la scrittura fallisce |
+| `tar` fallisce a metà | rclone vede solo la fine dello stream e salva l'archivio troncato come completo: lo rivela soltanto il codice di uscita della pipeline con `set -o pipefail` |
+
+- Uno stream non viene ritentato: rclone non può rileggere lo stdin, quindi dopo un errore il backup va rifatto.
+- Il PUT scrive direttamente nel file finale: sovrascrivere un backup con lo stesso nome non richiede spazio
+  in più, ma **se lo stream fallisce il vecchio backup è già perso**. Con 3 GB liberi e un archivio da 27 GB,
+  usare nomi con la data e cancellare i vecchi backup solo dopo un backup riuscito.
+
+Per non lasciare mai un archivio troncato con il nome definitivo, caricarlo con un nome temporaneo e rinominarlo
+solo se tutta la pipeline è andata bene. Su WebDAV la rinomina è un `MOVE` sul server, istantaneo:
+
+```bash
+set -o pipefail
+name=mydir-$(date +%F).tar.gz
+if sudo tar -cpzf - mydir | rclone rcat webdav-served:dumps/$name.part; then
+  rclone moveto webdav-served:dumps/$name.part webdav-served:dumps/$name
+else
+  rclone deletefile webdav-served:dumps/$name.part
+fi
+```
+
+### Configurazione per i backup
+
+Server, istanza dedicata:
+
+```bash
+GOMEMLIMIT=600MiB rclone serve webdav /srv/backup \
+  --addr :9090 --htpasswd /etc/rclone/htpasswd \
+  --vfs-cache-mode off --ignore-checksum
+```
+
+Client:
+
+```ini
+[webdav-served]
+type = webdav
+url = http://server:9090
+vendor = rclone
+user = utente
+pass = *** (rclone obscure) ***
+```
+
+---
+
+## 9. Riprodurre le misure
 
 Server in un container limitato come l'host di destinazione, con un binario statico
 (`CGO_ENABLED=0 go build -trimpath`), client rclone sull'host:
@@ -239,3 +336,16 @@ curl -s -o /dev/null -w '%{http_code} %{size_download}\n' -X PROPFIND http://127
 
 Ambiente delle misure: Go 1.27, client e server sullo stesso host (CPU del client non conteggiata), dati su un
 bind mount; i tempi assoluti dipendono dal disco, i rapporti fra configurazioni no.
+
+Le prove di streaming della [sezione 8](#8-backup-in-streaming-rclone-rcat) usano
+`fork-doc/scripts/rcat-stream-test.sh`, che mette anche il client in un container limitato e campiona ogni secondo
+memoria, `/tmp` e disco di entrambi:
+
+```bash
+T=$PWD/srvtest bash fork-doc/scripts/rcat-stream-test.sh webdav base 1024                     # stream da 1 GiB
+T=$PWD/srvtest bash fork-doc/scripts/rcat-stream-test.sh webdav ic 1024 --ignore-checksum     # flag del server
+T=$PWD/srvtest VENDOR=other bash fork-doc/scripts/rcat-stream-test.sh webdav spool 256        # spool nel /tmp del client
+T=$PWD/srvtest PRE=256 KILL=6 LSAFTER=1 bash fork-doc/scripts/rcat-stream-test.sh webdav kill 512  # client ucciso
+T=$PWD/srvtest DATA=/d SRVX="--tmpfs /d:size=96m,mode=1777" \
+  bash fork-doc/scripts/rcat-stream-test.sh webdav full 256                                   # disco pieno
+```

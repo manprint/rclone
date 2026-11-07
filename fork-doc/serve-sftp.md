@@ -1,9 +1,15 @@
 # `rclone serve sftp` su host piccoli (1 GB / 1 CPU)
 
 Questa guida raccoglie le verifiche su memoria e CPU di `rclone serve sftp` e i flag consigliati, per il server
-e per i client. Non sono servite modifiche al codice: la CPU va quasi tutta in MD5, cifratura SSH e chiamate di
-sistema per disco e rete, e i risparmi vengono dai flag. Tutti i numeri qui sotto sono misurati, con il metodo
-descritto in [Riprodurre le misure](#6-riprodurre-le-misure).
+e per i client. Per CPU e memoria non sono servite modifiche al codice: la CPU va quasi tutta in MD5, cifratura
+SSH e chiamate di sistema per disco e rete, e i risparmi vengono dai flag. Le prove di backup in streaming hanno
+invece trovato due difetti negli upload interrotti, corretti in due backport (vedi
+[sezione 6](#6-backup-in-streaming-rclone-rcat)):
+
+- `webui/backports/10-serve-sftp-dropped-uploads.patch` (`cmd/serve/sftp`);
+- `webui/backports/11-vfs-failed-stream-uploads.patch` (`vfs`, vale per tutti i `serve` e per `mount`).
+
+Tutti i numeri qui sotto sono misurati, con il metodo descritto in [Riprodurre le misure](#7-riprodurre-le-misure).
 
 `serve sftp` non usa il server HTTP di `lib/http`, quindi il limite di un'ora sui trasferimenti corretto per
 WebDAV ([serve-webdav.md](serve-webdav.md#2-timeout-dei-trasferimenti)) non lo riguarda.
@@ -126,7 +132,84 @@ il remote dopo l'upload: lì va valutato.
 
 ---
 
-## 6. Riprodurre le misure
+## 6. Backup in streaming (`rclone rcat`)
+
+Caso d'uso: da una VM con 3 GB liberi, `sudo tar -cpzf - mydir | rclone rcat sftp-served:dumps/mydir.tar.gz`
+verso un server da 1 GB / 1 CPU, con un archivio da 27 GB. Né il client né il server devono tenere l'archivio
+in RAM o in un file temporaneo.
+
+### Verifica
+
+Client e server in container `--memory=1g --cpus=1 --read-only`, con `/tmp` in un tmpfs da 64 MiB: qualunque
+copia temporanea dello stream fallirebbe con `no space left on device`. Stream casuale da 1 GiB, md5 del file
+sul server uguale a quello dello stream:
+
+| Flag | Tempo | CPU server | Memoria anonima server | Memoria anonima client | CPU client (rclone) |
+|---|---|---|---|---|---|
+| default | 27 s | 10,2 s | 37 MiB | 28 MiB | 6,1 s |
+| client `--sftp-disable-hashcheck` | 23 s | 9,5 s | 38 MiB | 26 MiB | 3,9 s |
+| client `--sftp-disable-hashcheck`, server `--ignore-checksum` | 21 s | 5,7 s | 36 MiB | 29 MiB | 3,6 s |
+
+- `/tmp` resta vuoto su client e server (24 KiB sul server sono le chiavi host); sul disco del server c'è un
+  solo file, grande quanto la parte ricevuta.
+- La memoria, misurata fino a 1 GiB, è piatta: con 512 MiB era 38 MiB sul server e 22 MiB sul client. Su
+  entrambi i lati i dati passano per buffer di dimensione fissa, quindi per l'archivio da 27 GB ci si aspetta
+  lo stesso; sul disco del server serve solo lo spazio del file.
+- Il backend sftp carica gli stream senza copie temporanee, senza opzioni particolari sul client.
+- Il tempo è limitato dalla CPU del container client, condivisa con la generazione dei dati e l'md5 di
+  controllo.
+- Senza `--sftp-disable-hashcheck` il client calcola l'MD5 dello stream e lo confronta con quello del server
+  alla fine: è l'unico controllo dell'archivio scritto, e costa circa 2 s di CPU del client per GiB.
+
+### Requisiti
+
+- **Server: `--vfs-cache-mode off`** (default). Con `writes` o `full` l'upload viene scritto prima nella cache
+  e poi copiato nella destinazione: serve il doppio dello spazio, e con la cache piena il client riceve
+  `no space left on device (SSH_FX_FAILURE)`.
+
+### Errori e interruzioni
+
+| Caso | Prima | Ora |
+|---|---|---|
+| client ucciso o connessione caduta a metà | il pezzo ricevuto restava salvato con il nome finale, come se fosse completo | il file parziale viene cancellato (backport 10) |
+| disco del server pieno | il client riceveva `io: read/write on closed pipe`, o `can't seek in file` per le scritture arrivate fuori ordine | il client riceve `no space left on device (SSH_FX_FAILURE)` (backport 11); il file parziale viene cancellato |
+| sovrascrittura fallita | il vecchio file, già cancellato dal backend `local`, restava elencato fino alla scadenza della cache delle cartelle | non viene più elencato (backport 11) |
+| `tar` fallisce a metà | rclone vede solo la fine dello stream e salva l'archivio troncato come completo: lo rivela soltanto il codice di uscita della pipeline con `set -o pipefail` | invariato |
+
+- Uno stream non viene ritentato: rclone non può rileggere lo stdin, quindi dopo un errore il backup va rifatto.
+- L'upload scrive direttamente nel file finale: sovrascrivere un backup con lo stesso nome non richiede spazio
+  in più, ma **se lo stream fallisce il vecchio backup è già perso**. Con 3 GB liberi e un archivio da 27 GB,
+  usare nomi con la data e cancellare i vecchi backup solo dopo un backup riuscito.
+
+Per non lasciare mai un archivio troncato con il nome definitivo, caricarlo con un nome temporaneo e rinominarlo
+solo se tutta la pipeline è andata bene. Su SFTP la rinomina avviene sul server, istantanea:
+
+```bash
+set -o pipefail
+name=mydir-$(date +%F).tar.gz
+if sudo tar -cpzf - mydir | rclone rcat sftp-served:dumps/$name.part; then
+  rclone moveto sftp-served:dumps/$name.part sftp-served:dumps/$name
+else
+  rclone deletefile sftp-served:dumps/$name.part
+fi
+```
+
+Server per i backup: la configurazione della [sezione 4](#4-configurazione-consigliata-host-da-1-gb--1-cpu),
+con la cache spenta.
+
+### Test aggiunti
+
+- `cmd/serve/sftp/handler_test.go`, `TestFilewriteConnectionDropped`: connessione chiusa dopo 1 MiB scritto; il
+  file non deve esistere.
+- `vfs/write_test.go`:
+  - `TestWriteFileHandleUploadFailed`: le scritture dopo il fallimento dell'upload, anche fuori ordine,
+    restituiscono l'errore dell'upload;
+  - `TestWriteFileHandleFailedReplace`: un file cancellato da un upload fallito che lo sostituiva non è più
+    elencato, sia con l'upload fallito sia con quello abbandonato.
+
+---
+
+## 7. Riprodurre le misure
 
 Server in un container limitato come l'host di destinazione, con un binario statico
 (`CGO_ENABLED=0 go build -trimpath`), client sull'host:
@@ -155,3 +238,12 @@ echo "put f512 f512" | sftp -c aes128-gcm@openssh.com -i id -P 18922 \
 
 Ambiente delle misure: Go 1.27, client e server sullo stesso host (CPU del client non conteggiata), dati su un
 bind mount; i tempi assoluti dipendono dal disco e dalla CPU, i rapporti fra configurazioni no.
+
+Le prove di streaming della [sezione 6](#6-backup-in-streaming-rclone-rcat) usano
+`fork-doc/scripts/rcat-stream-test.sh` (uso e variabili nell'intestazione dello script, esempi in
+[serve-webdav.md](serve-webdav.md#9-riprodurre-le-misure)):
+
+```bash
+T=$PWD/srvtest CLIX=--sftp-disable-hashcheck bash fork-doc/scripts/rcat-stream-test.sh sftp ic 1024 --ignore-checksum
+T=$PWD/srvtest PRE=256 KILL=6 LSAFTER=1 bash fork-doc/scripts/rcat-stream-test.sh sftp kill 512
+```

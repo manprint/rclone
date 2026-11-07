@@ -298,6 +298,64 @@ di `memory.stat` del cgroup, cioè la memoria del processo senza page cache.
 | Kill durante un upload da 1 GiB, poi riavvio con `--temp-object-expiry 24h` | temporaneo orfano rimosso all'avvio (`removed 1 stale temporary objects older than 1d`) |
 | `GOMAXPROCS` | 2 in container `--cpus=1` (Go ≥ 1.25 segue il limite del cgroup, minimo 2); 1 su una VM con 1 vCPU |
 
+### Backup in streaming con client e server da 1 GB / 1 CPU (`rclone rcat`)
+
+Caso d'uso: da una VM con 3 GB liberi, `sudo tar -cpzf - mydir | rclone rcat s3-served:dumps/mydir.tar.gz`
+verso un server da 1 GB / 1 CPU, con un archivio da 27 GB. Né il client né il server devono tenere l'archivio
+in RAM o in un file temporaneo.
+
+Client e server in container `--memory=1g --cpus=1 --read-only`, con `/tmp` in un tmpfs da 64 MiB: qualunque
+copia temporanea dello stream fallirebbe con `no space left on device`. Server con i flag di default, stream
+casuale da 1 GiB, md5 dell'oggetto uguale a quello dello stream:
+
+| Flag | Tempo | CPU server | Memoria anonima server | Memoria anonima client | CPU client (rclone) |
+|---|---|---|---|---|---|
+| default | 28 s | 11,4 s | 28 MiB | 43 MiB | 7,8 s |
+| server `--ignore-checksum` | 28 s | 8,1 s | 27 MiB | 43 MiB | 8,0 s |
+| `--ignore-checksum` su client e server | 26 s | 7,9 s | 33 MiB | 42 MiB | 5,8 s |
+| client `--s3-use-unsigned-payload=true` | 26 s | 10,8 s | 32 MiB | 47 MiB | 7,5 s |
+| client `--s3-chunk-size 16M --s3-upload-concurrency 2` | 27 s | 10,5 s | 28 MiB | 59 MiB | 7,6 s |
+
+- `/tmp` resta vuoto su client e server; sul disco del server c'è un solo file (il temporaneo
+  `.rclone_temp_multipart_*`, rinominato alla fine), grande quanto la parte ricevuta.
+- La memoria, misurata fino a 1 GiB, è piatta: con 512 MiB era 27 MiB sul server e 38 MiB sul client. Sul
+  server le parti in anticipo sono limitate da `--multipart-streaming-buffer-limit` e `-total` (stdin da 5 GiB
+  nella tabella sopra), sul client da chunk × concurrency, quindi per l'archivio da 27 GB ci si aspetta lo
+  stesso; sul disco del server serve solo lo spazio del file.
+- `--ignore-checksum` sul client toglie l'MD5 dell'intero stream, cioè il confronto finale con l'ETag; resta il
+  `Content-MD5` di ogni parte, verificato dal server.
+- `--s3-use-unsigned-payload` non serve: il server non verifica lo SHA256 del corpo e la CPU del client va
+  quasi tutta negli MD5.
+- Il tempo è limitato dalla CPU del container client, condivisa con la generazione dei dati e l'md5 di
+  controllo.
+
+Comportamenti verificati:
+
+| Caso | Cosa succede |
+|---|---|
+| chunk di default (5 MiB) | uno stream di dimensione sconosciuta può arrivare a 48,8 GiB (10.000 parti); oltre serve `--s3-chunk-size` più grande, con memoria del client circa chunk × `--s3-upload-concurrency` + 20 MiB |
+| client ucciso a metà | l'oggetto precedente con lo stesso nome resta intatto; il temporaneo resta sul disco del server, grande quanto la parte ricevuta, finché `--multipart-expiry` (default 24h) non annulla l'upload inattivo: con `--multipart-expiry 10s` è stato rimosso dopo 13 s |
+| disco del server pieno | il server risponde `500 InternalError` (gofakes3 non può rispondere 507) e l'SDK e rclone ritentano ogni parte: circa 4 minuti prima che il client si arrenda; il temporaneo viene cancellato |
+| `--vfs-cache-mode full` sul server | ogni parte passa dalla cache: con la cache piena, 500 ritentati per quasi 4 minuti e 211 MiB di memoria anonima sul server; tenere la cache spenta (default) |
+| `tar` fallisce a metà | rclone vede solo la fine dello stream e completa l'upload: l'archivio troncato viene salvato come completo, lo rivela soltanto il codice di uscita della pipeline con `set -o pipefail` |
+
+- Uno stream non viene ritentato per intero: rclone non può rileggere lo stdin, ritenta solo le singole parti.
+- La sovrascrittura richiede lo spazio di entrambi gli oggetti (vedi [sezione 8](#8-limiti-residui-intrinseci-o-by-design)):
+  con 3 GB liberi e un archivio da 27 GB usare nomi con la data e cancellare i vecchi backup dopo un backup
+  riuscito.
+- Su S3 una rinomina è una copia completa sul server, quindi il nome temporaneo seguito da `moveto` usato con
+  WebDAV e SFTP qui costerebbe il doppio dello spazio. In caso di errore si cancella l'oggetto:
+
+```bash
+set -o pipefail
+name=mydir-$(date +%F).tar.gz
+sudo tar -cpzf - mydir | rclone rcat s3-served:dumps/$name || rclone deletefile s3-served:dumps/$name
+```
+
+Server per i backup su un disco quasi pieno: il profilo B della [sezione 3](#3-configurazioni-consigliate-host-da-1-gb--1-cpu)
+con `--multipart-expiry 1h`, così il temporaneo di un client ucciso non occupa spazio per un giorno. Un upload
+viene annullato solo dopo 1h senza richieste, mentre uno stream attivo carica una parte ogni pochi MiB.
+
 ---
 
 ## 8. Limiti residui (intrinseci o by design)
@@ -317,6 +375,8 @@ di `memory.stat` del cgroup, cioè la memoria del processo senza page cache.
   `buffer-limit` / velocità di scrittura. Dopo 1 minuto risponde `SlowDown` e il client
   ritenta; l'upload resta valido.
 - **ETag multipart**: è l'MD5 dell'oggetto intero, non il formato `md5-N` di AWS.
+- **Access key**: almeno 3 caratteri; una chiave più corta (per esempio `--auth-key AK,SK`) viene rifiutata
+  con `403 InvalidAccessKeyId`.
 - **Timeout HTTP**: `--server-read-timeout` e `--server-write-timeout` (default `1h`) limitano il tempo
   senza progressi di una richiesta o di una risposta, non la sua durata (backport `08-http-progress-timeouts`,
   vedi [serve-webdav.md](serve-webdav.md#2-timeout-dei-trasferimenti)): un GET di un oggetto grande può durare
@@ -343,4 +403,13 @@ head -c 10G /dev/zero | rclone rcat --size 10737418240 s3t:bucket/big \
   --s3-chunk-size 64M --s3-upload-concurrency 4
 docker exec s3t grep -E '^(anon|file) ' /sys/fs/cgroup/memory.stat
 docker rm -f s3t
+```
+
+Le prove di streaming con client limitato ([sezione 7](#backup-in-streaming-con-client-e-server-da-1-gb--1-cpu-rclone-rcat))
+usano `fork-doc/scripts/rcat-stream-test.sh` (uso e variabili nell'intestazione dello script, esempi in
+[serve-webdav.md](serve-webdav.md#9-riprodurre-le-misure)):
+
+```bash
+T=$PWD/srvtest CLIX=--ignore-checksum bash fork-doc/scripts/rcat-stream-test.sh s3 ic 1024 --ignore-checksum
+T=$PWD/srvtest PRE=256 KILL=6 bash fork-doc/scripts/rcat-stream-test.sh s3 kill 512 --multipart-expiry 10s
 ```

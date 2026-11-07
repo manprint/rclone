@@ -31,9 +31,9 @@ https://github.com/manprint/rclone/releases; l'immagine dell'ultima release è
 | Documento | Contenuto |
 |-----------|-----------|
 | [uso.md](uso.md) | Guida d'uso: avvio, flag, interfaccia, client WebDAV, ripresa della riproduzione, ricerca, link di download e pubblici, sicurezza, limiti noti |
-| [serve-s3.md](serve-s3.md) | `serve s3` su host da 1 GB / 1 CPU con oggetti grandi: correzioni (backport `07-serve-s3-small-hosts`), flag consigliati per dimensione dei file, esempi dei client, misure |
-| [serve-webdav.md](serve-webdav.md) | `serve webdav` su host da 1 GB / 1 CPU: timeout dei trasferimenti lunghi (backport `08-http-progress-timeouts`), `--disable-depth-infinity` (backport `09-webdav-disable-depth-infinity`), flag consigliati, misure |
-| [serve-sftp.md](serve-sftp.md) | `serve sftp` su host da 1 GB / 1 CPU: dove va la CPU, flag del server e dei client (hash, cifrari, buffer), misure |
+| [serve-s3.md](serve-s3.md) | `serve s3` su host da 1 GB / 1 CPU con oggetti grandi: correzioni (backport `07-serve-s3-small-hosts`), flag consigliati per dimensione dei file, esempi dei client, backup in streaming con `rcat`, misure |
+| [serve-webdav.md](serve-webdav.md) | `serve webdav` su host da 1 GB / 1 CPU: timeout dei trasferimenti lunghi (backport `08-http-progress-timeouts`), `--disable-depth-infinity` e upload interrotti (backport `09-serve-webdav-small-hosts`, `11-vfs-failed-stream-uploads`), backup in streaming con `rcat`, flag consigliati, misure |
+| [serve-sftp.md](serve-sftp.md) | `serve sftp` su host da 1 GB / 1 CPU: dove va la CPU, flag del server e dei client (hash, cifrari, buffer), upload interrotti (backport `10-serve-sftp-dropped-uploads`, `11-vfs-failed-stream-uploads`), backup in streaming con `rcat`, misure |
 | [build.md](build.md) | Build locale del binario e dell'immagine Docker (`build.sh`, `just`) |
 | [../docker-serve-webdav/](../docker-serve-webdav/README.md) | Docker compose pronto per `serve webdav`: `.env` con tutte le variabili, template di `rclone.conf`, guida |
 | [ci-e-release.md](ci-e-release.md) | CI del fork, binari, immagini, attivazione e procedura di release |

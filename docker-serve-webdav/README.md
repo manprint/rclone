@@ -182,12 +182,14 @@ Flag upstream di `rclone serve webdav`.
 | `RCLONE_EXCLUDE` | `--exclude` | vuoto | Pattern di file e cartelle nascosti e non accessibili, separati da virgola, senza graffe: `*.log,*.lock,tmp/**` |
 | `RCLONE_MAX_HEADER_BYTES` | `--max-header-bytes` | `4096` | Dimensione massima degli header di una richiesta |
 | `RCLONE_ETAG_HASH` | `--etag-hash` | vuoto | Hash usato come ETag (`auto`, `md5`, ...) |
-| `RCLONE_SERVER_READ_TIMEOUT` | `--server-read-timeout` | `1h` | Durata massima di una richiesta, corpo compreso. `.env.example`: `12h` |
-| `RCLONE_SERVER_WRITE_TIMEOUT` | `--server-write-timeout` | `1h` | Durata massima di una risposta. `.env.example`: `12h` |
+| `RCLONE_SERVER_READ_TIMEOUT` | `--server-read-timeout` | `1h` | Tempo massimo senza progressi nella lettura di una richiesta (prima del backport 08: durata massima). `.env.example`: `12h` |
+| `RCLONE_SERVER_WRITE_TIMEOUT` | `--server-write-timeout` | `1h` | Tempo massimo senza progressi nella scrittura di una risposta (prima del backport 08: durata massima). `.env.example`: `12h` |
+| `RCLONE_DISABLE_DEPTH_INFINITY` | `--disable-depth-infinity` | `false` | Rifiuta i PROPFIND sull'intero albero (`Depth: infinity`), vedi [serve-webdav.md](../fork-doc/serve-webdav.md#3-propfind-sullintero-albero-e-cache-delle-cartelle) |
 
-I due timeout sono portati a `12h` perché una risposta dura quanto il trasferimento: un video guardato per
-intero in una sola richiesta, il download di un file o di uno zip grande, l'upload su una linea lenta
-supererebbero l'ora e sarebbero troncati.
+Con il backport `08-http-progress-timeouts` i due timeout limitano il tempo senza progressi: un trasferimento
+che muove dati non viene interrotto, uno fermo viene chiuso. Nelle immagini precedenti erano la durata massima,
+e un video guardato per intero in una sola richiesta, il download di un file o di uno zip grande, l'upload su
+una linea lenta superavano l'ora e venivano troncati: `.env.example` li porta a `12h`, che vale per entrambe.
 
 ### Utente singolo o htpasswd
 

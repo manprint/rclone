@@ -317,6 +317,10 @@ di `memory.stat` del cgroup, cioè la memoria del processo senza page cache.
   `buffer-limit` / velocità di scrittura. Dopo 1 minuto risponde `SlowDown` e il client
   ritenta; l'upload resta valido.
 - **ETag multipart**: è l'MD5 dell'oggetto intero, non il formato `md5-N` di AWS.
+- **Timeout HTTP**: `--server-read-timeout` e `--server-write-timeout` (default `1h`) limitano il tempo
+  senza progressi di una richiesta o di una risposta, non la sua durata (backport `08-http-progress-timeouts`,
+  vedi [serve-webdav.md](serve-webdav.md#2-timeout-dei-trasferimenti)): un GET di un oggetto grande può durare
+  più di un'ora.
 
 ---
 

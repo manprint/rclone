@@ -136,7 +136,12 @@ move or copy for this (nearly all do - without move or copy the upload is
 written directly and a failed PUT may leave a partial object at the key). If
 `serve s3` is killed part-way through an upload the temporary object (named
 with a leading `.rclone_temp_put_`) may be left behind; it is hidden from
-S3 listings but must be removed manually.
+S3 listings and has to be cleaned up as described in
+[Cleaning up temporary objects](#cleaning-up-temporary-objects).
+
+As the old object is only replaced once the new one is complete, replacing
+an object, by either kind of upload, needs free space for both until then:
+a 200 GB object overwritten on `local` needs 400 GB.
 
 ### Multipart uploads
 

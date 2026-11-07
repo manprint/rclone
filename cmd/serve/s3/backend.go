@@ -383,7 +383,6 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
 	// to hashing the VFS cache when the backing object is not available yet.
 	entry := node.DirEntry()
 	size := node.Size()
-	hash := getFileHashByte(node, b.s.etagHash(_vfs))
 
 	mimeType := fs.MimeTypeFromName(objectName)
 	if fobj, ok := entry.(fs.Object); ok {
@@ -395,13 +394,17 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
 		"Content-Type":  mimeType,
 	}
 
+	var hash []byte
 	var partSizes []int64
 	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
 		maps.Copy(meta, om.meta)
-		if om.hash != nil {
-			hash = om.hash
-		}
+		hash = om.hash
 		partSizes = om.partSizes
+	}
+	if hash == nil {
+		// Only hash the object if its ETag wasn't kept, as on remotes
+		// such as local this reads the whole object
+		hash = getFileHashByte(node, b.s.etagHash(_vfs))
 	}
 
 	return &gofakes3.Object{
@@ -454,7 +457,6 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
 	file := node.(*vfs.File)
 
 	size := node.Size()
-	hash := getFileHashByte(node, b.s.etagHash(_vfs))
 
 	in, err := file.Open(os.O_RDONLY)
 	if err != nil {
@@ -490,13 +492,16 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
 		"Content-Type":  mimeType,
 	}
 
+	var hash []byte
 	var partSizes []int64
 	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
 		maps.Copy(meta, om.meta)
-		if om.hash != nil {
-			hash = om.hash
-		}
+		hash = om.hash
 		partSizes = om.partSizes
+	}
+	if hash == nil {
+		// As in HeadObject, only hash the object if its ETag wasn't kept
+		hash = getFileHashByte(node, b.s.etagHash(_vfs))
 	}
 
 	return &gofakes3.Object{

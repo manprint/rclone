@@ -309,6 +309,58 @@ func TestMetadataStale(t *testing.T) {
 	assert.Equal(t, "", colour(ctxA), "metadata kept after the object was changed on the backend")
 }
 
+// TestStoredETagNotRehashed checks HEAD and GET of an object made by a
+// multipart upload return the ETag kept from the upload without reading
+// the whole object to hash it again.
+func TestStoredETagNotRehashed(t *testing.T) {
+	backing := t.TempDir()
+	b, _, bucket := newPutTestBackend(t, backing, nil)
+	ctx := context.Background()
+	data := strings.Repeat("a", 1024)
+	other := strings.Repeat("b", len(data))
+	md5Hex := func(s string) string {
+		sum := md5.Sum([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+
+	for _, object := range []string{"head.bin", "get.bin"} {
+		uploadID, err := b.CreateMultipartUpload(ctx, bucket, object, nil)
+		require.NoError(t, err)
+		etag, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(data)), strings.NewReader(data))
+		require.NoError(t, err)
+		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{{PartNumber: 1, ETag: etag}}}
+		_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+		require.NoError(t, err)
+
+		var obj *gofakes3.Object
+		if object == "get.bin" {
+			obj, err = b.GetObject(ctx, bucket, object, nil)
+		} else {
+			obj, err = b.HeadObject(ctx, bucket, object)
+		}
+		require.NoError(t, err)
+		require.NoError(t, obj.Contents.Close())
+		assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), object)
+
+		// Change the data keeping the size and modification time, so a
+		// hash the backend cached when the object was read is still
+		// returned: the object's hash is only that of the new data if the
+		// request didn't read it.
+		objPath := filepath.Join(backing, bucket, object)
+		fi, err := os.Stat(objPath)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(objPath, []byte(other), 0666))
+		require.NoError(t, os.Chtimes(objPath, fi.ModTime(), fi.ModTime()))
+		_vfs, err := b.s.getVFS(ctx)
+		require.NoError(t, err)
+		node, err := _vfs.Stat(bucket + "/" + object)
+		require.NoError(t, err)
+		got, err := node.DirEntry().(fs.Object).Hash(ctx, hash.MD5)
+		require.NoError(t, err)
+		assert.Equal(t, md5Hex(other), got, "%s read the object to hash it", object)
+	}
+}
+
 // TestCopyObjectMetadata checks a copy gets exactly the metadata given,
 // as worked out by gofakes3 from the metadata directive, and keeps the
 // source's modification time without adding it to the metadata.

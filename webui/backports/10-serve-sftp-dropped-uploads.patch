@@ -1,0 +1,87 @@
+From d7ecbd56221122ff0a6c9ed7e9b10358d6b3cdd1 Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Sat, 7 Nov 2026 15:24:34 +0100
+Subject: [PATCH] serve sftp: discard uploads cut off by a dropped connection
+ instead of storing them as complete (backport)
+
+When the connection dropped with a file open for writing, for example
+because the client was killed mid-stream, the file was closed normally
+and the part received was stored as if it were the whole file. The
+write is now abandoned instead, so the partial file is discarded.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmd/serve/sftp/handler.go      |  9 +++++++++
+ cmd/serve/sftp/handler_test.go | 32 ++++++++++++++++++++++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/cmd/serve/sftp/handler.go b/cmd/serve/sftp/handler.go
+index 5aa4fc758..3894b8e2d 100644
+--- a/cmd/serve/sftp/handler.go
++++ b/cmd/serve/sftp/handler.go
+@@ -45,6 +45,15 @@ func (h recoveringHandle) Close() (err error) {
+ 	return h.Handle.Close()
+ }
+ 
++// TransferError is called by pkg/sftp if the connection fails with the
++// file open. It abandons a streaming write so the part received isn't
++// stored as if it were the whole file.
++func (h recoveringHandle) TransferError(err error) {
++	if aborter, ok := h.Handle.(interface{ CloseWithError(error) error }); ok {
++		_ = aborter.CloseWithError(err)
++	}
++}
++
+ // vfsHandler converts the VFS to be served by SFTP
+ type vfsHandler struct {
+ 	*vfs.VFS
+diff --git a/cmd/serve/sftp/handler_test.go b/cmd/serve/sftp/handler_test.go
+index 0b5631f5e..46e27bd13 100644
+--- a/cmd/serve/sftp/handler_test.go
++++ b/cmd/serve/sftp/handler_test.go
+@@ -8,6 +8,7 @@ package sftp
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"io"
+ 	"os"
+ 	"runtime"
+@@ -330,3 +331,34 @@ func writeFile(client *sftp.Client, fileName, contents string) error {
+ 	}
+ 	return f.Close()
+ }
++
++// Test that an upload cut off by the connection dropping is discarded
++// rather than stored as if it were complete.
++func TestFilewriteConnectionDropped(t *testing.T) {
++	vfsOpt := vfscommon.Opt
++	conn := startTestSSHClient(t, &vfsOpt)
++	client, err := sftp.NewClient(conn)
++	require.NoError(t, err)
++	f, err := client.OpenFile("file.bin", os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
++	require.NoError(t, err)
++	_, err = f.Write(make([]byte, 1024*1024))
++	require.NoError(t, err)
++
++	// Drop the connection with the file still open
++	require.NoError(t, conn.Close())
++
++	conn2, err := ssh.Dial("tcp", conn.RemoteAddr().String(), &ssh.ClientConfig{
++		User:            testUser,
++		Auth:            []ssh.AuthMethod{ssh.Password(testPass)},
++		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
++	})
++	require.NoError(t, err)
++	defer func() { _ = conn2.Close() }()
++	client2, err := sftp.NewClient(conn2)
++	require.NoError(t, err)
++	defer func() { _ = client2.Close() }()
++	assert.Eventually(t, func() bool {
++		_, err := client2.Stat("file.bin")
++		return errors.Is(err, os.ErrNotExist)
++	}, 10*time.Second, 50*time.Millisecond, "partial upload was stored")
++}
+-- 
+2.53.0
+

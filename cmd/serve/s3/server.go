@@ -54,6 +54,7 @@ func newServer(ctx context.Context, f fs.Fs, opt *Options, vfsOpt *vfscommon.Opt
 		if err != nil {
 			if w.backend != nil {
 				w.backend.stopReaper()
+				w.backend.stopTempSweep()
 			}
 			w.provider.Shutdown()
 		}
@@ -109,6 +110,13 @@ func newServer(ctx context.Context, f fs.Fs, opt *Options, vfsOpt *vfscommon.Opt
 		w.backend.startReaper(time.Duration(w.opt.MultipartExpiry))
 	} else if w.opt.MultipartMaxUploads > 0 {
 		fs.Logf("serve s3", "--multipart-expiry 0 means abandoned multipart uploads are never cleaned up and go on counting towards --multipart-max-uploads %d", w.opt.MultipartMaxUploads)
+	}
+	if w.opt.TempObjectExpiry > 0 {
+		if w.provider.IsProxy() {
+			fs.Logf("serve s3", "--temp-object-expiry is ignored with --auth-proxy as the remotes served aren't known until users log in")
+		} else {
+			w.backend.startTempSweep(ctx, f, time.Duration(w.opt.TempObjectExpiry))
+		}
 	}
 
 	w.handler = w.faker.Server()
@@ -232,6 +240,7 @@ func (w *Server) Addr() net.Addr {
 // Shutdown the server
 func (w *Server) Shutdown() error {
 	w.backend.stopReaper()
+	w.backend.stopTempSweep()
 	err := w.server.Shutdown()
 	// Uploads in progress hold their VFS so must go first
 	w.backend.forgetAllUploads()

@@ -1661,15 +1661,270 @@ func TestMultipartPumpFailure(t *testing.T) {
 	up.fh = &flakySink{failAt: len(part1) + len(part2)/2}
 
 	// Part 2 arrives first so is buffered, then fails part way into the
-	// sink when part 1 arrives and it is pumped.
+	// sink when part 1 arrives and it is pumped after it.
 	_, err = b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
 	require.NoError(t, err)
 	_, err = b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
-	require.ErrorIs(t, err, errBoom)
+	require.NoError(t, err)
 
 	// The upload is gone rather than accepting part 2 again.
+	waitIdle(t, up)
 	_, err = b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
 	require.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
+}
+
+// gatedSink passes writes to the WriteCloser, holding any which would
+// take it past open bytes until gate is closed, and closes blocked when
+// it first holds one. A held write then fails with err if it is set.
+type gatedSink struct {
+	io.WriteCloser
+	open    int
+	written int
+	err     error
+	gate    chan struct{}
+	blocked chan struct{}
+	once    sync.Once
+}
+
+func (s *gatedSink) Write(p []byte) (int, error) {
+	if s.written+len(p) > s.open {
+		s.once.Do(func() { close(s.blocked) })
+		<-s.gate
+		if s.err != nil {
+			return 0, s.err
+		}
+	}
+	s.written += len(p)
+	return s.WriteCloser.Write(p)
+}
+
+func (s *gatedSink) CloseWithError(err error) error {
+	return s.WriteCloser.(interface{ CloseWithError(error) error }).CloseWithError(err)
+}
+
+// waitIdle waits until up has no request or background pump in flight.
+func waitIdle(t *testing.T, up *multipartUpload) {
+	require.Eventually(t, func() bool {
+		up.mu.Lock()
+		defer up.mu.Unlock()
+		return !up.pumping && up.active == 0
+	}, 10*time.Second, time.Millisecond)
+}
+
+// TestMultipartCompleteWaitsForPump checks that a completion which arrives
+// while buffered parts are still being streamed waits for them, as happens
+// when the client gave up on the request streaming them and its resend of
+// that request's part was accepted as already streamed.
+func TestMultipartCompleteWaitsForPump(t *testing.T) {
+	b, f, bucket := newPutTestBackend(t, "", nil)
+	ctx := context.Background()
+	const object = "complete-pumping.bin"
+
+	uploadID, err := b.CreateMultipartUpload(ctx, bucket, object, nil)
+	require.NoError(t, err)
+	up, err := b.loadUpload(ctx, uploadID)
+	require.NoError(t, err)
+	part1 := []byte(random.String(1024))
+	part2 := []byte(random.String(1024))
+	fh, err := up.vfs.Create(up.streamFp)
+	require.NoError(t, err)
+	sink := &gatedSink{WriteCloser: fh, open: len(part1), gate: make(chan struct{}), blocked: make(chan struct{})}
+	up.fh = sink
+	openGate := sync.OnceFunc(func() { close(sink.gate) })
+	t.Cleanup(openGate)
+
+	// Part 2 is buffered, so it is streamed after part 1, and part 1 is
+	// sent again as a client which gave up waiting for it would.
+	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+	require.NoError(t, err)
+	part1Done := make(chan error, 1)
+	go func() {
+		_, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+		part1Done <- err
+	}()
+	<-sink.blocked
+
+	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+	require.NoError(t, err)
+	completeDone := make(chan error, 1)
+	go func() {
+		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
+			{PartNumber: 1, ETag: etag1},
+			{PartNumber: 2, ETag: etag2},
+		}}
+		_, _, err := b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+		completeDone <- err
+	}()
+	select {
+	case err := <-completeDone:
+		t.Fatalf("completion didn't wait for the buffered part to be streamed (err=%v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	openGate()
+	require.NoError(t, <-part1Done)
+	require.NoError(t, <-completeDone)
+	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
+}
+
+// newGatedSinkUpload starts a multipart upload on b whose sink holds
+// writes past the first open bytes until the returned gate is opened.
+func newGatedSinkUpload(t *testing.T, b *s3Backend, bucket, object string, open int) (gofakes3.UploadID, *gatedSink, func()) {
+	uploadID, err := b.CreateMultipartUpload(context.Background(), bucket, object, nil)
+	require.NoError(t, err)
+	up, err := b.loadUpload(context.Background(), uploadID)
+	require.NoError(t, err)
+	fh, err := up.vfs.Create(up.streamFp)
+	require.NoError(t, err)
+	sink := &gatedSink{WriteCloser: fh, open: open, gate: make(chan struct{}), blocked: make(chan struct{})}
+	up.fh = sink
+	openGate := sync.OnceFunc(func() { close(sink.gate) })
+	t.Cleanup(openGate)
+	return uploadID, sink, openGate
+}
+
+// TestMultipartPartNotHeldByPump checks that the request for the part the
+// stream needs is answered once that part is streamed, while the parts
+// buffered after it are streamed in the background, so a client doesn't
+// time out waiting for parts it has already had replies for.
+func TestMultipartPartNotHeldByPump(t *testing.T) {
+	b, f, bucket := newPutTestBackend(t, "", nil)
+	ctx := context.Background()
+	const object = "not-held.bin"
+	part1 := []byte(random.String(1024))
+	part2 := []byte(random.String(1024))
+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
+
+	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+	require.NoError(t, err)
+	part1Done := make(chan error, 1)
+	var etag1 string
+	go func() {
+		var err error
+		etag1, err = b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+		part1Done <- err
+	}()
+	<-sink.blocked
+	select {
+	case err := <-part1Done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("part 1 was held while part 2 was streamed")
+	}
+
+	openGate()
+	input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
+		{PartNumber: 1, ETag: etag1},
+		{PartNumber: 2, ETag: etag2},
+	}}
+	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+	require.NoError(t, err)
+	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
+}
+
+// TestMultipartPumpFailureNotCommitted checks that a completion waiting
+// for buffered parts to be streamed fails, committing nothing, if they
+// can't be.
+func TestMultipartPumpFailureNotCommitted(t *testing.T) {
+	b, f, bucket := newPutTestBackend(t, "", nil)
+	ctx := context.Background()
+	const object = "pump-failure-complete.bin"
+	part1 := []byte(random.String(1024))
+	part2 := []byte(random.String(1024))
+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
+	up, err := b.loadUpload(ctx, uploadID)
+	require.NoError(t, err)
+
+	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+	require.NoError(t, err)
+	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+	require.NoError(t, err)
+	<-sink.blocked
+	completeDone := make(chan error, 1)
+	go func() {
+		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
+			{PartNumber: 1, ETag: etag1},
+			{PartNumber: 2, ETag: etag2},
+		}}
+		_, _, err := b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+		completeDone <- err
+	}()
+
+	sink.err = errBoom
+	openGate()
+	require.Error(t, <-completeDone)
+	waitIdle(t, up)
+	_, err = b.loadUpload(ctx, uploadID)
+	require.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
+	_, err = f.NewObject(ctx, path.Join(bucket, object))
+	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
+}
+
+// TestMultipartCompleteWaitForPumpEnds checks that a completion waiting
+// for buffered parts to be streamed gives up with ErrSlowDown after
+// multipartWaitTimeout, or when its request is cancelled, leaving the
+// upload to be completed later.
+func TestMultipartCompleteWaitForPumpEnds(t *testing.T) {
+	oldTimeout := multipartWaitTimeout
+	multipartWaitTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { multipartWaitTimeout = oldTimeout })
+	b, f, bucket := newPutTestBackend(t, "", nil)
+	ctx := context.Background()
+	const object = "complete-wait-ends.bin"
+	part1 := []byte(random.String(1024))
+	part2 := []byte(random.String(1024))
+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
+
+	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+	require.NoError(t, err)
+	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+	require.NoError(t, err)
+	<-sink.blocked
+	input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
+		{PartNumber: 1, ETag: etag1},
+		{PartNumber: 2, ETag: etag2},
+	}}
+
+	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+	assert.ErrorIs(t, err, gofakes3.ErrSlowDown)
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, _, err = b.CompleteMultipartUpload(cancelled, bucket, object, uploadID, input)
+	assert.ErrorIs(t, err, context.Canceled)
+
+	openGate()
+	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+	require.NoError(t, err)
+	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
+}
+
+// TestMultipartForgetWhilePumping checks that uploads can be torn down,
+// as on shutdown, while buffered parts are being streamed in the
+// background, leaving nothing behind.
+func TestMultipartForgetWhilePumping(t *testing.T) {
+	b, f, bucket := newPutTestBackend(t, "", nil)
+	ctx := context.Background()
+	const object = "forget-pumping.bin"
+	part1 := []byte(random.String(1024))
+	part2 := []byte(random.String(1024))
+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
+	up, err := b.loadUpload(ctx, uploadID)
+	require.NoError(t, err)
+
+	_, err = b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+	require.NoError(t, err)
+	_, err = b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+	require.NoError(t, err)
+	<-sink.blocked
+
+	b.forgetAllUploads()
+	openGate()
+	waitIdle(t, up)
+	_, err = b.loadUpload(ctx, uploadID)
+	assert.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
+	entries, err := f.List(ctx, bucket)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
 
 // TestMultipartPartBadMD5 checks that a part whose body doesn't match the

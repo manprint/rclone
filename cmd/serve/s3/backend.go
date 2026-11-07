@@ -25,6 +25,7 @@ import (
 	"github.com/rclone/rclone/fs"
 	fshash "github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/fs/operations"
+	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/vfs"
 	"github.com/rclone/rclone/vfs/vfscommon"
 )
@@ -62,6 +63,9 @@ type s3Backend struct {
 	reaperQuit chan struct{} // closed to stop the abandoned upload reaper
 	reaperStop sync.Once
 
+	sweepCancel context.CancelFunc // stops the stale temporary object sweep, or nil
+	sweepDone   chan struct{}      // closed when the sweep has finished
+
 	commitLocks pathLocks // serialises moving objects into place, see commitObject
 }
 
@@ -89,18 +93,55 @@ type tenant struct {
 	// meta is the stored metadata of objects, by object path, and
 	// the directory markers put, by directory path.
 	meta *lru.Cache[string, objectMeta]
+
+	// hashes is the hashes of objects which had to be read to hash
+	// them, by object path, kept apart from meta so they don't push
+	// out metadata which can't be got again.
+	hashes *lru.Cache[string, objectMeta]
 }
 
 // objectMeta is the metadata stored for an object, with the size and
 // modification time the object had when it was stored.
 type objectMeta struct {
 	meta        map[string]string
-	hash        []byte  // the ETag of the object, if not its hash
-	partSizes   []int64 // the sizes of the parts of an object made by a multipart upload
+	hash        []byte   // the ETag of the object, if not its hash
+	parts       partRuns // the sizes of the parts of an object made by a multipart upload
 	size        int64
 	modTime     time.Time
 	dirMarker   bool // a directory marker was put for the directory at this path
 	noDirMarker bool // the directory marker of the directory at this path was deleted, with --directory-markers
+}
+
+// partRuns are the sizes of the parts of an object as runs of parts of
+// the same size, so those of an upload of equal parts take little memory
+// however many parts it has.
+type partRuns []partRun
+
+type partRun struct {
+	size  int64
+	count int
+}
+
+// newPartRuns returns the part sizes as runs.
+func newPartRuns(sizes []int64) (runs partRuns) {
+	for _, size := range sizes {
+		if n := len(runs); n > 0 && runs[n-1].size == size {
+			runs[n-1].count++
+		} else {
+			runs = append(runs, partRun{size: size, count: 1})
+		}
+	}
+	return runs
+}
+
+// sizes returns the size of each part, or nil if there are none.
+func (runs partRuns) sizes() (sizes []int64) {
+	for _, run := range runs {
+		for range run.count {
+			sizes = append(sizes, run.size)
+		}
+	}
+	return sizes
 }
 
 // newMetadataStore makes a store for the metadata of up to maxObjects
@@ -138,6 +179,7 @@ func (b *s3Backend) tenant(ctx context.Context) *tenant {
 			id:     id,
 			budget: newBufferBudget(int64(b.s.opt.MultipartStreamingBufferTotal)),
 			meta:   newMetadataStore(b.s.opt.MetadataMaxObjects),
+			hashes: newMetadataStore(b.s.opt.MetadataMaxObjects),
 		}
 		b.tenants[id] = t
 	}
@@ -161,7 +203,13 @@ func (t *tenant) context() context.Context {
 // Nothing is returned if the object has changed since the metadata was
 // stored, as it has been replaced by something other than this user.
 func (t *tenant) getMeta(ctx context.Context, fp string, node vfs.Node) (om objectMeta, ok bool) {
-	om, ok = t.meta.Get(fp)
+	return getValidMeta(ctx, t.meta, fp, node)
+}
+
+// getValidMeta returns what store holds for node, the object at fp,
+// unless the object has changed since it was stored.
+func getValidMeta(ctx context.Context, store *lru.Cache[string, objectMeta], fp string, node vfs.Node) (om objectMeta, ok bool) {
+	om, ok = store.Get(fp)
 	if !ok || om.dirMarker || om.noDirMarker || om.size != node.Size() {
 		return objectMeta{}, false
 	}
@@ -191,6 +239,7 @@ func (t *tenant) storeMeta(_vfs *vfs.VFS, fp string, meta map[string]string) (er
 // storeObjectMeta stores om as the metadata of the object at fp in
 // _vfs, as storeMeta does.
 func (t *tenant) storeObjectMeta(_vfs *vfs.VFS, fp string, om objectMeta) (err error) {
+	t.hashes.Remove(fp)
 	meta := om.meta
 	delete(meta, "Last-Modified")
 	mtime, ok := meta["X-Amz-Meta-Mtime"]
@@ -249,6 +298,7 @@ func (b *s3Backend) SetObjectTagging(ctx context.Context, bucketName, objectName
 // directory marker of the directory at fp.
 func (t *tenant) removeMeta(fp string) {
 	t.meta.Remove(fp)
+	t.hashes.Remove(fp)
 }
 
 // storeDirMarker records that a directory marker was put for the
@@ -383,7 +433,6 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
 	// to hashing the VFS cache when the backing object is not available yet.
 	entry := node.DirEntry()
 	size := node.Size()
-	hash := getFileHashByte(node, b.s.etagHash(_vfs))
 
 	mimeType := fs.MimeTypeFromName(objectName)
 	if fobj, ok := entry.(fs.Object); ok {
@@ -396,13 +445,12 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
 	}
 
 	var partSizes []int64
-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
+	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
+	if ok {
 		maps.Copy(meta, om.meta)
-		if om.hash != nil {
-			hash = om.hash
-		}
-		partSizes = om.partSizes
+		partSizes = om.parts.sizes()
 	}
+	hash := b.etag(ctx, _vfs, fp, node, om, ok)
 
 	return &gofakes3.Object{
 		Name:      objectName,
@@ -454,7 +502,6 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
 	file := node.(*vfs.File)
 
 	size := node.Size()
-	hash := getFileHashByte(node, b.s.etagHash(_vfs))
 
 	in, err := file.Open(os.O_RDONLY)
 	if err != nil {
@@ -491,13 +538,12 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
 	}
 
 	var partSizes []int64
-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
+	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
+	if ok {
 		maps.Copy(meta, om.meta)
-		if om.hash != nil {
-			hash = om.hash
-		}
-		partSizes = om.partSizes
+		partSizes = om.parts.sizes()
 	}
+	hash := b.etag(ctx, _vfs, fp, node, om, ok)
 
 	return &gofakes3.Object{
 		Name:      objectName,
@@ -748,10 +794,29 @@ func (b *s3Backend) commitObject(ctx context.Context, _vfs *vfs.VFS, tmpFp, fp s
 
 // objectHash returns the hash returned as the ETag of the object at fp.
 func (b *s3Backend) objectHash(ctx context.Context, _vfs *vfs.VFS, fp string, node vfs.Node) []byte {
-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok && om.hash != nil {
+	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
+	return b.etag(ctx, _vfs, fp, node, om, ok)
+}
+
+// etag returns the hash returned as the ETag of the object at fp, given
+// the metadata getMeta returned for it: the ETag kept with it, or failing
+// that the object's hash. On remotes such as local, where hashing reads
+// the whole object, the hash is kept while the object is unchanged so it
+// isn't read again when the VFS forgets the object.
+func (b *s3Backend) etag(ctx context.Context, _vfs *vfs.VFS, fp string, node vfs.Node, om objectMeta, ok bool) []byte {
+	if ok && om.hash != nil {
 		return om.hash
 	}
-	return getFileHashByte(node, b.s.etagHash(_vfs))
+	t := b.tenant(ctx)
+	if kept, ok := getValidMeta(ctx, t.hashes, fp, node); ok {
+		return kept.hash
+	}
+	size, modTime := node.Size(), node.ModTime()
+	hash := getFileHashByte(node, b.s.etagHash(_vfs))
+	if hash != nil && _vfs.Fs().Features().SlowHash {
+		t.hashes.Add(fp, objectMeta{hash: hash, size: size, modTime: modTime})
+	}
+	return hash
 }
 
 // DeleteMulti deletes multiple objects in a single request.
@@ -941,4 +1006,56 @@ func (b *s3Backend) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket
 		ETag:         quoteETag(c.Hash),
 		LastModified: gofakes3.NewContentTime(cStat.ModTime()),
 	}, nil
+}
+
+// startTempSweep starts removing the stale temporary objects on f in the
+// background, as removeStaleTempObjects does. Stopped by stopTempSweep.
+func (b *s3Backend) startTempSweep(ctx context.Context, f fs.Fs, age time.Duration) {
+	ctx, b.sweepCancel = context.WithCancel(ctx)
+	b.sweepDone = make(chan struct{})
+	go func() {
+		defer close(b.sweepDone)
+		removeStaleTempObjects(ctx, f, age)
+	}()
+}
+
+// stopTempSweep stops the stale temporary object sweep, if running, and
+// waits for it to finish.
+func (b *s3Backend) stopTempSweep() {
+	if b.sweepCancel != nil {
+		b.sweepCancel()
+		<-b.sweepDone
+	}
+}
+
+// removeStaleTempObjects removes the temporary objects on f not modified
+// for longer than age. Uploads in progress are only known to the server
+// running them, so these are left by uploads which never finished because
+// a server was stopped, unless another server serving f is running uploads
+// idle for longer than age.
+func removeStaleTempObjects(ctx context.Context, f fs.Fs, age time.Duration) {
+	cutoff := time.Now().Add(-age)
+	var removed, failed int
+	err := walk.ListR(ctx, f, "", true, -1, walk.ListObjects, func(entries fs.DirEntries) error {
+		for _, entry := range entries {
+			o, ok := entry.(fs.Object)
+			if !ok || !isTempObject(path.Base(o.Remote())) || !o.ModTime(ctx).Before(cutoff) {
+				continue
+			}
+			if err := o.Remove(ctx); err != nil {
+				fs.Errorf(o, "failed to remove stale temporary object: %v", err)
+				failed++
+				continue
+			}
+			fs.Infof(o, "removed stale temporary object")
+			removed++
+		}
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		fs.Errorf(f, "serve s3: looking for stale temporary objects: %v", err)
+	}
+	if removed > 0 || failed > 0 {
+		fs.Logf(f, "serve s3: removed %d stale temporary objects older than %v, failed to remove %d", removed, fs.Duration(age), failed)
+	}
 }

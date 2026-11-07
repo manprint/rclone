@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +21,8 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/fs/object"
+	"github.com/rclone/rclone/fs/walk"
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/vfs"
 	"github.com/rclone/rclone/vfs/vfscommon"
@@ -309,6 +314,119 @@ func TestMetadataStale(t *testing.T) {
 	assert.Equal(t, "", colour(ctxA), "metadata kept after the object was changed on the backend")
 }
 
+// TestStoredETagNotRehashed checks HEAD and GET of an object made by a
+// multipart upload return the ETag kept from the upload without reading
+// the whole object to hash it again.
+func TestStoredETagNotRehashed(t *testing.T) {
+	backing := t.TempDir()
+	b, _, bucket := newPutTestBackend(t, backing, nil)
+	ctx := context.Background()
+	data := strings.Repeat("a", 1024)
+	other := strings.Repeat("b", len(data))
+	md5Hex := func(s string) string {
+		sum := md5.Sum([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+
+	for _, object := range []string{"head.bin", "get.bin"} {
+		uploadID, err := b.CreateMultipartUpload(ctx, bucket, object, nil)
+		require.NoError(t, err)
+		etag, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(data)), strings.NewReader(data))
+		require.NoError(t, err)
+		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{{PartNumber: 1, ETag: etag}}}
+		_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
+		require.NoError(t, err)
+
+		var obj *gofakes3.Object
+		if object == "get.bin" {
+			obj, err = b.GetObject(ctx, bucket, object, nil)
+		} else {
+			obj, err = b.HeadObject(ctx, bucket, object)
+		}
+		require.NoError(t, err)
+		require.NoError(t, obj.Contents.Close())
+		assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), object)
+
+		// Change the data keeping the size and modification time, so a
+		// hash the backend cached when the object was read is still
+		// returned: the object's hash is only that of the new data if the
+		// request didn't read it.
+		objPath := filepath.Join(backing, bucket, object)
+		fi, err := os.Stat(objPath)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(objPath, []byte(other), 0666))
+		require.NoError(t, os.Chtimes(objPath, fi.ModTime(), fi.ModTime()))
+		_vfs, err := b.s.getVFS(ctx)
+		require.NoError(t, err)
+		node, err := _vfs.Stat(bucket + "/" + object)
+		require.NoError(t, err)
+		got, err := node.DirEntry().(fs.Object).Hash(ctx, hash.MD5)
+		require.NoError(t, err)
+		assert.Equal(t, md5Hex(other), got, "%s read the object to hash it", object)
+	}
+}
+
+// TestComputedETagKept checks that the ETag of an object which had to be
+// read to hash it is kept, so it isn't read again once the VFS has
+// forgotten the object, as it does when its directory cache expires.
+func TestComputedETagKept(t *testing.T) {
+	backing := t.TempDir()
+	b, _, bucket := newPutTestBackend(t, backing, nil)
+	ctx := context.Background()
+	data := strings.Repeat("a", 1024)
+	other := strings.Repeat("b", len(data))
+	md5Hex := func(s string) string {
+		sum := md5.Sum([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+	const object = "computed.bin"
+	objPath := filepath.Join(backing, bucket, object)
+	require.NoError(t, os.WriteFile(objPath, []byte(data), 0666))
+	fi, err := os.Stat(objPath)
+	require.NoError(t, err)
+	_vfs, err := b.s.getVFS(ctx)
+	require.NoError(t, err)
+
+	obj, err := b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash))
+
+	// Change the data keeping the size and modification time, then make
+	// the VFS forget the object: the ETag is only that of the new data if
+	// the object was read to hash it again.
+	require.NoError(t, os.WriteFile(objPath, []byte(other), 0666))
+	require.NoError(t, os.Chtimes(objPath, fi.ModTime(), fi.ModTime()))
+	_vfs.FlushDirCache()
+
+	obj, err = b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), "HEAD read the object to hash it")
+	obj, err = b.GetObject(ctx, bucket, object, nil)
+	require.NoError(t, err)
+	require.NoError(t, obj.Contents.Close())
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), "GET read the object to hash it")
+	node, err := _vfs.Stat(bucket + "/" + object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(data), hex.EncodeToString(b.objectHash(ctx, _vfs, bucket+"/"+object, node)), "listing read the object to hash it")
+
+	// An object replaced through serve s3 is hashed again, even with the
+	// same size and modification time.
+	third := strings.Repeat("c", len(data))
+	mtime := fmt.Sprintf("%d.%09d", fi.ModTime().Unix(), fi.ModTime().Nanosecond())
+	_, err = b.PutObject(ctx, bucket, object, map[string]string{"X-Amz-Meta-Mtime": mtime}, strings.NewReader(third), int64(len(third)))
+	require.NoError(t, err)
+	obj, err = b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(third), hex.EncodeToString(obj.Hash))
+
+	// An object changed on the remote is hashed again.
+	require.NoError(t, os.WriteFile(objPath, []byte(other+"c"), 0666))
+	_vfs.FlushDirCache()
+	obj, err = b.HeadObject(ctx, bucket, object)
+	require.NoError(t, err)
+	assert.Equal(t, md5Hex(other+"c"), hex.EncodeToString(obj.Hash))
+}
+
 // TestCopyObjectMetadata checks a copy gets exactly the metadata given,
 // as worked out by gofakes3 from the metadata directive, and keeps the
 // source's modification time without adding it to the metadata.
@@ -477,4 +595,94 @@ func TestFileDirConflicts(t *testing.T) {
 		err := test.call(test.key)
 		assert.True(t, gofakes3.HasErrorCode(err, gofakes3.ErrInvalidRequest), "%s: %v", test.key, err)
 	}
+}
+
+// TestPartRuns checks the part sizes of multipart objects are stored as
+// runs of parts of the same size and read back as they were.
+func TestPartRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sizes []int64
+		runs  int
+	}{
+		{"none", nil, 0},
+		{"one", []int64{7}, 1},
+		{"uniform", []int64{5, 5, 5, 5}, 1},
+		{"uniform short last", append(slices.Repeat([]int64{64 << 20}, 9999), 1), 2},
+		{"irregular", []int64{3, 1, 1, 2, 2, 2, 3}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runs := newPartRuns(tc.sizes)
+			assert.Len(t, runs, tc.runs)
+			assert.Equal(t, tc.sizes, runs.sizes())
+		})
+	}
+}
+
+// putAgedObject puts an object of a few bytes at remote on f, last
+// modified at modTime.
+func putAgedObject(t *testing.T, f fs.Fs, remote string, modTime time.Time) {
+	src := object.NewStaticObjectInfo(remote, modTime, 3, true, nil, nil)
+	_, err := f.Put(context.Background(), strings.NewReader("abc"), src)
+	require.NoError(t, err)
+}
+
+// TestRemoveStaleTempObjects checks that the temporary objects of
+// unfinished uploads are removed once they are older than the expiry, and
+// nothing else is.
+func TestRemoveStaleTempObjects(t *testing.T) {
+	for _, tc := range testRemotes {
+		t.Run(tc.name, func(t *testing.T) {
+			fstest.Initialise()
+			ctx := context.Background()
+			backing := tc.backing
+			if backing == "" {
+				backing = t.TempDir()
+			}
+			f, err := fs.NewFs(ctx, backing)
+			require.NoError(t, err)
+			bucket := fmt.Sprintf("sweep-%d", testBackingCounter.Add(1))
+			old := time.Now().Add(-2 * time.Hour)
+			for _, remote := range []string{
+				putObjectPrefix + "a",
+				"dir/" + multipartUploadPrefix + "b",
+				legacyMultipartUploadPrefix + "c",
+			} {
+				putAgedObject(t, f, path.Join(bucket, remote), old)
+			}
+			putAgedObject(t, f, path.Join(bucket, putObjectPrefix+"recent"), time.Now())
+			putAgedObject(t, f, path.Join(bucket, "dir/old"), old)
+			putAgedObject(t, f, path.Join(bucket, ".rclone_tempx"), old)
+
+			removeStaleTempObjects(ctx, f, time.Hour)
+
+			var left []string
+			require.NoError(t, walk.ListR(ctx, f, bucket, true, -1, walk.ListObjects, func(entries fs.DirEntries) error {
+				for _, entry := range entries {
+					left = append(left, strings.TrimPrefix(entry.Remote(), bucket+"/"))
+				}
+				return nil
+			}))
+			assert.ElementsMatch(t, []string{putObjectPrefix + "recent", "dir/old", ".rclone_tempx"}, left)
+		})
+	}
+}
+
+// TestTempObjectExpiry checks that --temp-object-expiry removes the stale
+// temporary objects when the server starts.
+func TestTempObjectExpiry(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "bucket", putObjectPrefix+"a")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o777))
+	require.NoError(t, os.WriteFile(stale, []byte("abc"), 0o666))
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(stale, old, old))
+
+	newMultipartTestServerOpt(t, dir, false, func(opt *Options) {
+		opt.TempObjectExpiry = fs.Duration(time.Hour)
+	})
+	assert.Eventually(t, func() bool {
+		_, err := os.Stat(stale)
+		return os.IsNotExist(err)
+	}, 10*time.Second, 10*time.Millisecond)
 }

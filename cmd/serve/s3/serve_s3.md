@@ -71,6 +71,15 @@ these. If the remote doesn't have the MD5 of objects, `HeadObject`
 and listings only return the MD5 of objects uploaded through `serve
 s3` while the object's metadata is kept (see below).
 
+On remotes such as `local`, where the MD5 is computed by reading the
+object, an object whose MD5 isn't kept - after a restart, for
+example - is read in full the first time it is listed or fetched, which
+can take minutes for a big object and outlast the client's timeout.
+The MD5 is then kept in memory while the object is unchanged, for at
+most `--metadata-max-objects` objects of each user. To keep the MD5s
+across restarts serve a [hasher](/hasher/) remote wrapping the remote
+instead, or if clients don't need the `ETag` use `--etag-hash ""`.
+
 ### Quickstart
 
 For a simple set up, to serve `remote:path` over s3, run the server
@@ -127,7 +136,12 @@ move or copy for this (nearly all do - without move or copy the upload is
 written directly and a failed PUT may leave a partial object at the key). If
 `serve s3` is killed part-way through an upload the temporary object (named
 with a leading `.rclone_temp_put_`) may be left behind; it is hidden from
-S3 listings but must be removed manually.
+S3 listings and has to be cleaned up as described in
+[Cleaning up temporary objects](#cleaning-up-temporary-objects).
+
+As the old object is only replaced once the new one is complete, replacing
+an object, by either kind of upload, needs free space for both until then:
+a 200 GB object overwritten on `local` needs 400 GB.
 
 ### Multipart uploads
 
@@ -326,6 +340,16 @@ rclone v1.75 named its temporary multipart objects
 `.rclone_multipart_upload_*`; leftovers from an older server are also
 hidden from listings and can be cleaned up the same way.
 
+Alternatively set `--temp-object-expiry` (for example to `24h`) and the
+server does this itself when it starts: it walks the whole remote in
+the background and removes the temporary objects, of either name, not
+modified for longer than that. On a remote with a lot of objects the
+walk can take a while; requests are served meanwhile. The same advice
+applies to the value as to `--min-age`: if several servers share the
+remote it must be longer than any of them leaves an upload idle, so no
+shorter than their `--multipart-expiry`. It is ignored with
+`--auth-proxy`, where the remotes aren't known until users log in.
+
 #### Abandoned uploads
 
 A client which starts a multipart upload and vanishes without either
@@ -398,7 +422,8 @@ make it use unbounded memory.
   `--s3-upload-concurrency`). Plain `PutObject` uploads use the same
   while they are in progress.
 - **Metadata.** The metadata of at most `--metadata-max-objects`
-  objects of each user is kept, each limited to 2 KB.
+  objects of each user is kept, each limited to 2 KB, and on remotes
+  where hashing reads the object the `ETag` of as many again.
 - **Request bodies.** The XML bodies of requests such as
   `CompleteMultipartUpload` and `DeleteObjects` are limited to 10 MiB,
   and `DeleteObjects` to 1000 keys. A browser form (`POST`) upload

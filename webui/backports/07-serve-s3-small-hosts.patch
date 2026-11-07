@@ -1,0 +1,1057 @@
+From d5840e0e95eebfd9eb067c3e92a2f5461f0217bc Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Sat, 7 Nov 2026 13:39:32 +0100
+Subject: [PATCH] serve s3: use less memory and CPU with big objects on small
+ hosts (backport)
+
+Patch of the fork proposed to upstream, carried as
+webui/backports/07-serve-s3-small-hosts.patch: it is the squash of the
+serve s3 commits of the fork, documented in fork-doc/serve-s3.md.
+
+- don't read the whole object to hash it on HEAD and GET when its ETag
+  is kept, nor every few minutes once the VFS directory cache expires
+- fix multipart uploads failing with InvalidPart when a part request
+  timed out while the buffered parts after it were being written
+- write buffered parts in the background, so a part request no longer
+  waits for the parts after it
+- use less memory to remember the parts of big multipart objects
+- add --temp-object-expiry to remove on startup the temporary objects
+  left by a crash
+- document the memory and disk space needed with big objects
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmd/serve/s3/backend.go        | 151 ++++++++++++++++---
+ cmd/serve/s3/backend_test.go   | 208 ++++++++++++++++++++++++++
+ cmd/serve/s3/multipart.go      |  68 ++++++++-
+ cmd/serve/s3/multipart_test.go | 259 ++++++++++++++++++++++++++++++++-
+ cmd/serve/s3/s3.go             |   5 +
+ cmd/serve/s3/serve_s3.md       |  29 +++-
+ cmd/serve/s3/server.go         |   9 ++
+ 7 files changed, 704 insertions(+), 25 deletions(-)
+
+diff --git a/cmd/serve/s3/backend.go b/cmd/serve/s3/backend.go
+index 0847eddbc..cc8408d4b 100644
+--- a/cmd/serve/s3/backend.go
++++ b/cmd/serve/s3/backend.go
+@@ -25,6 +25,7 @@ import (
+ 	"github.com/rclone/rclone/fs"
+ 	fshash "github.com/rclone/rclone/fs/hash"
+ 	"github.com/rclone/rclone/fs/operations"
++	"github.com/rclone/rclone/fs/walk"
+ 	"github.com/rclone/rclone/vfs"
+ 	"github.com/rclone/rclone/vfs/vfscommon"
+ )
+@@ -62,6 +63,9 @@ type s3Backend struct {
+ 	reaperQuit chan struct{} // closed to stop the abandoned upload reaper
+ 	reaperStop sync.Once
+ 
++	sweepCancel context.CancelFunc // stops the stale temporary object sweep, or nil
++	sweepDone   chan struct{}      // closed when the sweep has finished
++
+ 	commitLocks pathLocks // serialises moving objects into place, see commitObject
+ }
+ 
+@@ -89,20 +93,57 @@ type tenant struct {
+ 	// meta is the stored metadata of objects, by object path, and
+ 	// the directory markers put, by directory path.
+ 	meta *lru.Cache[string, objectMeta]
++
++	// hashes is the hashes of objects which had to be read to hash
++	// them, by object path, kept apart from meta so they don't push
++	// out metadata which can't be got again.
++	hashes *lru.Cache[string, objectMeta]
+ }
+ 
+ // objectMeta is the metadata stored for an object, with the size and
+ // modification time the object had when it was stored.
+ type objectMeta struct {
+ 	meta        map[string]string
+-	hash        []byte  // the ETag of the object, if not its hash
+-	partSizes   []int64 // the sizes of the parts of an object made by a multipart upload
++	hash        []byte   // the ETag of the object, if not its hash
++	parts       partRuns // the sizes of the parts of an object made by a multipart upload
+ 	size        int64
+ 	modTime     time.Time
+ 	dirMarker   bool // a directory marker was put for the directory at this path
+ 	noDirMarker bool // the directory marker of the directory at this path was deleted, with --directory-markers
+ }
+ 
++// partRuns are the sizes of the parts of an object as runs of parts of
++// the same size, so those of an upload of equal parts take little memory
++// however many parts it has.
++type partRuns []partRun
++
++type partRun struct {
++	size  int64
++	count int
++}
++
++// newPartRuns returns the part sizes as runs.
++func newPartRuns(sizes []int64) (runs partRuns) {
++	for _, size := range sizes {
++		if n := len(runs); n > 0 && runs[n-1].size == size {
++			runs[n-1].count++
++		} else {
++			runs = append(runs, partRun{size: size, count: 1})
++		}
++	}
++	return runs
++}
++
++// sizes returns the size of each part, or nil if there are none.
++func (runs partRuns) sizes() (sizes []int64) {
++	for _, run := range runs {
++		for range run.count {
++			sizes = append(sizes, run.size)
++		}
++	}
++	return sizes
++}
++
+ // newMetadataStore makes a store for the metadata of up to maxObjects
+ // objects, forgetting that of the least recently used after that. If
+ // maxObjects <= 0 there is no limit.
+@@ -138,6 +179,7 @@ func (b *s3Backend) tenant(ctx context.Context) *tenant {
+ 			id:     id,
+ 			budget: newBufferBudget(int64(b.s.opt.MultipartStreamingBufferTotal)),
+ 			meta:   newMetadataStore(b.s.opt.MetadataMaxObjects),
++			hashes: newMetadataStore(b.s.opt.MetadataMaxObjects),
+ 		}
+ 		b.tenants[id] = t
+ 	}
+@@ -161,7 +203,13 @@ func (t *tenant) context() context.Context {
+ // Nothing is returned if the object has changed since the metadata was
+ // stored, as it has been replaced by something other than this user.
+ func (t *tenant) getMeta(ctx context.Context, fp string, node vfs.Node) (om objectMeta, ok bool) {
+-	om, ok = t.meta.Get(fp)
++	return getValidMeta(ctx, t.meta, fp, node)
++}
++
++// getValidMeta returns what store holds for node, the object at fp,
++// unless the object has changed since it was stored.
++func getValidMeta(ctx context.Context, store *lru.Cache[string, objectMeta], fp string, node vfs.Node) (om objectMeta, ok bool) {
++	om, ok = store.Get(fp)
+ 	if !ok || om.dirMarker || om.noDirMarker || om.size != node.Size() {
+ 		return objectMeta{}, false
+ 	}
+@@ -191,6 +239,7 @@ func (t *tenant) storeMeta(_vfs *vfs.VFS, fp string, meta map[string]string) (er
+ // storeObjectMeta stores om as the metadata of the object at fp in
+ // _vfs, as storeMeta does.
+ func (t *tenant) storeObjectMeta(_vfs *vfs.VFS, fp string, om objectMeta) (err error) {
++	t.hashes.Remove(fp)
+ 	meta := om.meta
+ 	delete(meta, "Last-Modified")
+ 	mtime, ok := meta["X-Amz-Meta-Mtime"]
+@@ -249,6 +298,7 @@ func (b *s3Backend) SetObjectTagging(ctx context.Context, bucketName, objectName
+ // directory marker of the directory at fp.
+ func (t *tenant) removeMeta(fp string) {
+ 	t.meta.Remove(fp)
++	t.hashes.Remove(fp)
+ }
+ 
+ // storeDirMarker records that a directory marker was put for the
+@@ -383,7 +433,6 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
+ 	// to hashing the VFS cache when the backing object is not available yet.
+ 	entry := node.DirEntry()
+ 	size := node.Size()
+-	hash := getFileHashByte(node, b.s.etagHash(_vfs))
+ 
+ 	mimeType := fs.MimeTypeFromName(objectName)
+ 	if fobj, ok := entry.(fs.Object); ok {
+@@ -396,13 +445,12 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
+ 	}
+ 
+ 	var partSizes []int64
+-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
++	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
++	if ok {
+ 		maps.Copy(meta, om.meta)
+-		if om.hash != nil {
+-			hash = om.hash
+-		}
+-		partSizes = om.partSizes
++		partSizes = om.parts.sizes()
+ 	}
++	hash := b.etag(ctx, _vfs, fp, node, om, ok)
+ 
+ 	return &gofakes3.Object{
+ 		Name:      objectName,
+@@ -454,7 +502,6 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
+ 	file := node.(*vfs.File)
+ 
+ 	size := node.Size()
+-	hash := getFileHashByte(node, b.s.etagHash(_vfs))
+ 
+ 	in, err := file.Open(os.O_RDONLY)
+ 	if err != nil {
+@@ -491,13 +538,12 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
+ 	}
+ 
+ 	var partSizes []int64
+-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
++	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
++	if ok {
+ 		maps.Copy(meta, om.meta)
+-		if om.hash != nil {
+-			hash = om.hash
+-		}
+-		partSizes = om.partSizes
++		partSizes = om.parts.sizes()
+ 	}
++	hash := b.etag(ctx, _vfs, fp, node, om, ok)
+ 
+ 	return &gofakes3.Object{
+ 		Name:      objectName,
+@@ -748,10 +794,29 @@ func (b *s3Backend) commitObject(ctx context.Context, _vfs *vfs.VFS, tmpFp, fp s
+ 
+ // objectHash returns the hash returned as the ETag of the object at fp.
+ func (b *s3Backend) objectHash(ctx context.Context, _vfs *vfs.VFS, fp string, node vfs.Node) []byte {
+-	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok && om.hash != nil {
++	om, ok := b.tenant(ctx).getMeta(ctx, fp, node)
++	return b.etag(ctx, _vfs, fp, node, om, ok)
++}
++
++// etag returns the hash returned as the ETag of the object at fp, given
++// the metadata getMeta returned for it: the ETag kept with it, or failing
++// that the object's hash. On remotes such as local, where hashing reads
++// the whole object, the hash is kept while the object is unchanged so it
++// isn't read again when the VFS forgets the object.
++func (b *s3Backend) etag(ctx context.Context, _vfs *vfs.VFS, fp string, node vfs.Node, om objectMeta, ok bool) []byte {
++	if ok && om.hash != nil {
+ 		return om.hash
+ 	}
+-	return getFileHashByte(node, b.s.etagHash(_vfs))
++	t := b.tenant(ctx)
++	if kept, ok := getValidMeta(ctx, t.hashes, fp, node); ok {
++		return kept.hash
++	}
++	size, modTime := node.Size(), node.ModTime()
++	hash := getFileHashByte(node, b.s.etagHash(_vfs))
++	if hash != nil && _vfs.Fs().Features().SlowHash {
++		t.hashes.Add(fp, objectMeta{hash: hash, size: size, modTime: modTime})
++	}
++	return hash
+ }
+ 
+ // DeleteMulti deletes multiple objects in a single request.
+@@ -942,3 +1007,55 @@ func (b *s3Backend) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket
+ 		LastModified: gofakes3.NewContentTime(cStat.ModTime()),
+ 	}, nil
+ }
++
++// startTempSweep starts removing the stale temporary objects on f in the
++// background, as removeStaleTempObjects does. Stopped by stopTempSweep.
++func (b *s3Backend) startTempSweep(ctx context.Context, f fs.Fs, age time.Duration) {
++	ctx, b.sweepCancel = context.WithCancel(ctx)
++	b.sweepDone = make(chan struct{})
++	go func() {
++		defer close(b.sweepDone)
++		removeStaleTempObjects(ctx, f, age)
++	}()
++}
++
++// stopTempSweep stops the stale temporary object sweep, if running, and
++// waits for it to finish.
++func (b *s3Backend) stopTempSweep() {
++	if b.sweepCancel != nil {
++		b.sweepCancel()
++		<-b.sweepDone
++	}
++}
++
++// removeStaleTempObjects removes the temporary objects on f not modified
++// for longer than age. Uploads in progress are only known to the server
++// running them, so these are left by uploads which never finished because
++// a server was stopped, unless another server serving f is running uploads
++// idle for longer than age.
++func removeStaleTempObjects(ctx context.Context, f fs.Fs, age time.Duration) {
++	cutoff := time.Now().Add(-age)
++	var removed, failed int
++	err := walk.ListR(ctx, f, "", true, -1, walk.ListObjects, func(entries fs.DirEntries) error {
++		for _, entry := range entries {
++			o, ok := entry.(fs.Object)
++			if !ok || !isTempObject(path.Base(o.Remote())) || !o.ModTime(ctx).Before(cutoff) {
++				continue
++			}
++			if err := o.Remove(ctx); err != nil {
++				fs.Errorf(o, "failed to remove stale temporary object: %v", err)
++				failed++
++				continue
++			}
++			fs.Infof(o, "removed stale temporary object")
++			removed++
++		}
++		return nil
++	})
++	if err != nil && ctx.Err() == nil {
++		fs.Errorf(f, "serve s3: looking for stale temporary objects: %v", err)
++	}
++	if removed > 0 || failed > 0 {
++		fs.Logf(f, "serve s3: removed %d stale temporary objects older than %v, failed to remove %d", removed, fs.Duration(age), failed)
++	}
++}
+diff --git a/cmd/serve/s3/backend_test.go b/cmd/serve/s3/backend_test.go
+index 1642a7275..15b9fcf4b 100644
+--- a/cmd/serve/s3/backend_test.go
++++ b/cmd/serve/s3/backend_test.go
+@@ -4,9 +4,12 @@ import (
+ 	"context"
+ 	"crypto/md5"
+ 	"encoding/hex"
++	"fmt"
+ 	"io"
+ 	"os"
++	"path"
+ 	"path/filepath"
++	"slices"
+ 	"strings"
+ 	"testing"
+ 	"time"
+@@ -18,6 +21,8 @@ import (
+ 	"github.com/rclone/rclone/fs"
+ 	"github.com/rclone/rclone/fs/config/obscure"
+ 	"github.com/rclone/rclone/fs/hash"
++	"github.com/rclone/rclone/fs/object"
++	"github.com/rclone/rclone/fs/walk"
+ 	"github.com/rclone/rclone/fstest"
+ 	"github.com/rclone/rclone/vfs"
+ 	"github.com/rclone/rclone/vfs/vfscommon"
+@@ -309,6 +314,119 @@ func TestMetadataStale(t *testing.T) {
+ 	assert.Equal(t, "", colour(ctxA), "metadata kept after the object was changed on the backend")
+ }
+ 
++// TestStoredETagNotRehashed checks HEAD and GET of an object made by a
++// multipart upload return the ETag kept from the upload without reading
++// the whole object to hash it again.
++func TestStoredETagNotRehashed(t *testing.T) {
++	backing := t.TempDir()
++	b, _, bucket := newPutTestBackend(t, backing, nil)
++	ctx := context.Background()
++	data := strings.Repeat("a", 1024)
++	other := strings.Repeat("b", len(data))
++	md5Hex := func(s string) string {
++		sum := md5.Sum([]byte(s))
++		return hex.EncodeToString(sum[:])
++	}
++
++	for _, object := range []string{"head.bin", "get.bin"} {
++		uploadID, err := b.CreateMultipartUpload(ctx, bucket, object, nil)
++		require.NoError(t, err)
++		etag, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(data)), strings.NewReader(data))
++		require.NoError(t, err)
++		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{{PartNumber: 1, ETag: etag}}}
++		_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
++		require.NoError(t, err)
++
++		var obj *gofakes3.Object
++		if object == "get.bin" {
++			obj, err = b.GetObject(ctx, bucket, object, nil)
++		} else {
++			obj, err = b.HeadObject(ctx, bucket, object)
++		}
++		require.NoError(t, err)
++		require.NoError(t, obj.Contents.Close())
++		assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), object)
++
++		// Change the data keeping the size and modification time, so a
++		// hash the backend cached when the object was read is still
++		// returned: the object's hash is only that of the new data if the
++		// request didn't read it.
++		objPath := filepath.Join(backing, bucket, object)
++		fi, err := os.Stat(objPath)
++		require.NoError(t, err)
++		require.NoError(t, os.WriteFile(objPath, []byte(other), 0666))
++		require.NoError(t, os.Chtimes(objPath, fi.ModTime(), fi.ModTime()))
++		_vfs, err := b.s.getVFS(ctx)
++		require.NoError(t, err)
++		node, err := _vfs.Stat(bucket + "/" + object)
++		require.NoError(t, err)
++		got, err := node.DirEntry().(fs.Object).Hash(ctx, hash.MD5)
++		require.NoError(t, err)
++		assert.Equal(t, md5Hex(other), got, "%s read the object to hash it", object)
++	}
++}
++
++// TestComputedETagKept checks that the ETag of an object which had to be
++// read to hash it is kept, so it isn't read again once the VFS has
++// forgotten the object, as it does when its directory cache expires.
++func TestComputedETagKept(t *testing.T) {
++	backing := t.TempDir()
++	b, _, bucket := newPutTestBackend(t, backing, nil)
++	ctx := context.Background()
++	data := strings.Repeat("a", 1024)
++	other := strings.Repeat("b", len(data))
++	md5Hex := func(s string) string {
++		sum := md5.Sum([]byte(s))
++		return hex.EncodeToString(sum[:])
++	}
++	const object = "computed.bin"
++	objPath := filepath.Join(backing, bucket, object)
++	require.NoError(t, os.WriteFile(objPath, []byte(data), 0666))
++	fi, err := os.Stat(objPath)
++	require.NoError(t, err)
++	_vfs, err := b.s.getVFS(ctx)
++	require.NoError(t, err)
++
++	obj, err := b.HeadObject(ctx, bucket, object)
++	require.NoError(t, err)
++	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash))
++
++	// Change the data keeping the size and modification time, then make
++	// the VFS forget the object: the ETag is only that of the new data if
++	// the object was read to hash it again.
++	require.NoError(t, os.WriteFile(objPath, []byte(other), 0666))
++	require.NoError(t, os.Chtimes(objPath, fi.ModTime(), fi.ModTime()))
++	_vfs.FlushDirCache()
++
++	obj, err = b.HeadObject(ctx, bucket, object)
++	require.NoError(t, err)
++	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), "HEAD read the object to hash it")
++	obj, err = b.GetObject(ctx, bucket, object, nil)
++	require.NoError(t, err)
++	require.NoError(t, obj.Contents.Close())
++	assert.Equal(t, md5Hex(data), hex.EncodeToString(obj.Hash), "GET read the object to hash it")
++	node, err := _vfs.Stat(bucket + "/" + object)
++	require.NoError(t, err)
++	assert.Equal(t, md5Hex(data), hex.EncodeToString(b.objectHash(ctx, _vfs, bucket+"/"+object, node)), "listing read the object to hash it")
++
++	// An object replaced through serve s3 is hashed again, even with the
++	// same size and modification time.
++	third := strings.Repeat("c", len(data))
++	mtime := fmt.Sprintf("%d.%09d", fi.ModTime().Unix(), fi.ModTime().Nanosecond())
++	_, err = b.PutObject(ctx, bucket, object, map[string]string{"X-Amz-Meta-Mtime": mtime}, strings.NewReader(third), int64(len(third)))
++	require.NoError(t, err)
++	obj, err = b.HeadObject(ctx, bucket, object)
++	require.NoError(t, err)
++	assert.Equal(t, md5Hex(third), hex.EncodeToString(obj.Hash))
++
++	// An object changed on the remote is hashed again.
++	require.NoError(t, os.WriteFile(objPath, []byte(other+"c"), 0666))
++	_vfs.FlushDirCache()
++	obj, err = b.HeadObject(ctx, bucket, object)
++	require.NoError(t, err)
++	assert.Equal(t, md5Hex(other+"c"), hex.EncodeToString(obj.Hash))
++}
++
+ // TestCopyObjectMetadata checks a copy gets exactly the metadata given,
+ // as worked out by gofakes3 from the metadata directive, and keeps the
+ // source's modification time without adding it to the metadata.
+@@ -478,3 +596,93 @@ func TestFileDirConflicts(t *testing.T) {
+ 		assert.True(t, gofakes3.HasErrorCode(err, gofakes3.ErrInvalidRequest), "%s: %v", test.key, err)
+ 	}
+ }
++
++// TestPartRuns checks the part sizes of multipart objects are stored as
++// runs of parts of the same size and read back as they were.
++func TestPartRuns(t *testing.T) {
++	for _, tc := range []struct {
++		name  string
++		sizes []int64
++		runs  int
++	}{
++		{"none", nil, 0},
++		{"one", []int64{7}, 1},
++		{"uniform", []int64{5, 5, 5, 5}, 1},
++		{"uniform short last", append(slices.Repeat([]int64{64 << 20}, 9999), 1), 2},
++		{"irregular", []int64{3, 1, 1, 2, 2, 2, 3}, 4},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			runs := newPartRuns(tc.sizes)
++			assert.Len(t, runs, tc.runs)
++			assert.Equal(t, tc.sizes, runs.sizes())
++		})
++	}
++}
++
++// putAgedObject puts an object of a few bytes at remote on f, last
++// modified at modTime.
++func putAgedObject(t *testing.T, f fs.Fs, remote string, modTime time.Time) {
++	src := object.NewStaticObjectInfo(remote, modTime, 3, true, nil, nil)
++	_, err := f.Put(context.Background(), strings.NewReader("abc"), src)
++	require.NoError(t, err)
++}
++
++// TestRemoveStaleTempObjects checks that the temporary objects of
++// unfinished uploads are removed once they are older than the expiry, and
++// nothing else is.
++func TestRemoveStaleTempObjects(t *testing.T) {
++	for _, tc := range testRemotes {
++		t.Run(tc.name, func(t *testing.T) {
++			fstest.Initialise()
++			ctx := context.Background()
++			backing := tc.backing
++			if backing == "" {
++				backing = t.TempDir()
++			}
++			f, err := fs.NewFs(ctx, backing)
++			require.NoError(t, err)
++			bucket := fmt.Sprintf("sweep-%d", testBackingCounter.Add(1))
++			old := time.Now().Add(-2 * time.Hour)
++			for _, remote := range []string{
++				putObjectPrefix + "a",
++				"dir/" + multipartUploadPrefix + "b",
++				legacyMultipartUploadPrefix + "c",
++			} {
++				putAgedObject(t, f, path.Join(bucket, remote), old)
++			}
++			putAgedObject(t, f, path.Join(bucket, putObjectPrefix+"recent"), time.Now())
++			putAgedObject(t, f, path.Join(bucket, "dir/old"), old)
++			putAgedObject(t, f, path.Join(bucket, ".rclone_tempx"), old)
++
++			removeStaleTempObjects(ctx, f, time.Hour)
++
++			var left []string
++			require.NoError(t, walk.ListR(ctx, f, bucket, true, -1, walk.ListObjects, func(entries fs.DirEntries) error {
++				for _, entry := range entries {
++					left = append(left, strings.TrimPrefix(entry.Remote(), bucket+"/"))
++				}
++				return nil
++			}))
++			assert.ElementsMatch(t, []string{putObjectPrefix + "recent", "dir/old", ".rclone_tempx"}, left)
++		})
++	}
++}
++
++// TestTempObjectExpiry checks that --temp-object-expiry removes the stale
++// temporary objects when the server starts.
++func TestTempObjectExpiry(t *testing.T) {
++	dir := t.TempDir()
++	stale := filepath.Join(dir, "bucket", putObjectPrefix+"a")
++	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o777))
++	require.NoError(t, os.WriteFile(stale, []byte("abc"), 0o666))
++	old := time.Now().Add(-2 * time.Hour)
++	require.NoError(t, os.Chtimes(stale, old, old))
++
++	newMultipartTestServerOpt(t, dir, false, func(opt *Options) {
++		opt.TempObjectExpiry = fs.Duration(time.Hour)
++	})
++	assert.Eventually(t, func() bool {
++		_, err := os.Stat(stale)
++		return os.IsNotExist(err)
++	}, 10*time.Second, 10*time.Millisecond)
++}
+diff --git a/cmd/serve/s3/multipart.go b/cmd/serve/s3/multipart.go
+index 02564c331..c9eb0b096 100644
+--- a/cmd/serve/s3/multipart.go
++++ b/cmd/serve/s3/multipart.go
+@@ -64,6 +64,7 @@ type multipartUpload struct {
+ 	fh     io.WriteCloser // sink the in-order parts are written to, opened by sink (guarded by mu)
+ 	vfs    *vfs.VFS       // the VFS fh is created on, used for all later operations
+ 	tenant *tenant        // the user the upload belongs to
++	fail   func()         // tears the upload down when parts streamed in the background fail, or nil
+ 
+ 	objectMD5 hash.Hash // MD5 of the data written to the sink, so of the whole object once complete, or nil if not needed for the ETag
+ 
+@@ -325,6 +326,7 @@ func (b *s3Backend) CreateMultipartUpload(ctx context.Context, bucketName, objec
+ 	up.budget = t.budget
+ 	up.vfs = _vfs
+ 	up.madeDir = madeDir
++	up.fail = func() { b.failUpload(uploadID, up) }
+ 	if b.s.etagHash(_vfs) == fshash.MD5 {
+ 		up.objectMD5 = md5.New()
+ 	}
+@@ -651,9 +653,36 @@ func (up *multipartUpload) streamDirect(partNumber int, size int64, body io.Read
+ 	up.partialSize, up.partialMD5 = 0, nil
+ 	up.nextPart++
+ 	up.broadcast()
++	if _, ok := up.streamBuf[up.nextPart]; ok && up.vfs.Hold() {
++		// Stream the parts buffered after this one in the background, so
++		// the client gets its reply for this part now rather than after
++		// parts it has already had replies for, which could take longer
++		// than it is prepared to wait.
++		up.active++
++		go up.pumpBackground()
++		up.mu.Unlock()
++		return md5Sum, nil
++	}
+ 	return md5Sum, up.pump()
+ }
+ 
++// pumpBackground pumps the buffered parts as pump does for a request
++// which has already been answered, failing the upload if one can't be
++// streamed. It takes over the sink and the activity streamDirect started
++// for it.
++func (up *multipartUpload) pumpBackground() {
++	defer up.endActivity()
++	up.mu.Lock()
++	err := up.pump()
++	if err == nil || errors.Is(err, gofakes3.ErrNoSuchUpload) {
++		return
++	}
++	fs.Errorf(up.fp, "multipart upload: streaming buffered part: %v", err)
++	if up.isPoisoned() && up.fail != nil {
++		up.fail()
++	}
++}
++
+ // poison marks the upload as one which can never be completed, because the
+ // stream holds data which can't be taken back, then gives up the sink as
+ // stopStreaming does.
+@@ -880,6 +909,33 @@ func (up *multipartUpload) pump() error {
+ 	}
+ }
+ 
++// waitPumped waits until no request is writing to the sink, so the parts
++// already accepted have all been streamed before the upload is completed.
++//
++// Parts which were buffered are streamed in the background after the
++// client has had replies for them, so they can still be being streamed
++// when it completes the upload. As in waitForTurn, ErrSlowDown is
++// returned if the sink isn't released within multipartWaitTimeout.
++func (up *multipartUpload) waitPumped(ctx context.Context) error {
++	timer := time.NewTimer(multipartWaitTimeout)
++	defer timer.Stop()
++	up.mu.Lock()
++	for up.pumping && !up.closed {
++		changed := up.changed
++		up.mu.Unlock()
++		select {
++		case <-changed:
++		case <-ctx.Done():
++			return ctx.Err()
++		case <-timer.C:
++			return gofakes3.ErrSlowDown
++		}
++		up.mu.Lock()
++	}
++	up.mu.Unlock()
++	return nil
++}
++
+ // pipePart writes the whole of rw into w (the sink).
+ func pipePart(w io.Writer, rw *pool.RW) error {
+ 	if _, err := rw.Seek(0, io.SeekStart); err != nil {
+@@ -903,6 +959,10 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
+ 	}
+ 	defer up.endActivity()
+ 
++	if err := up.waitPumped(ctx); err != nil {
++		return "", "", err
++	}
++
+ 	// A completion which fails before the commit leaves the upload as
+ 	// it was, so the client can upload any missing parts and retry it,
+ 	// as on S3. gofakes3 keeps its record of the upload too.
+@@ -944,9 +1004,9 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
+ 		etagHash = up.objectMD5.Sum(nil)
+ 	}
+ 	_ = up.tenant.storeObjectMeta(up.vfs, up.fp, objectMeta{
+-		meta:      up.meta,
+-		hash:      etagHash,
+-		partSizes: up.listedPartSizes(input),
++		meta:  up.meta,
++		hash:  etagHash,
++		parts: newPartRuns(up.listedPartSizes(input)),
+ 	})
+ 	if etagHash == nil {
+ 		// The upload is complete, so isn't failed if the object can't be read
+@@ -1151,7 +1211,7 @@ func (up *multipartUpload) close() error {
+ 		}
+ 		return nil
+ 	}
+-	if len(up.streamBuf) != 0 || up.nextPart-1 != len(up.partSizes) || up.pumping || up.partialSize != 0 {
++	if len(up.streamBuf) != 0 || up.nextPart-1 != len(up.partSizes) || up.pumping || up.partialSize != 0 || up.poisoned {
+ 		up.mu.Unlock()
+ 		return gofakes3.ErrInvalidPart
+ 	}
+diff --git a/cmd/serve/s3/multipart_test.go b/cmd/serve/s3/multipart_test.go
+index bc29be869..802f93d54 100644
+--- a/cmd/serve/s3/multipart_test.go
++++ b/cmd/serve/s3/multipart_test.go
+@@ -1661,17 +1661,272 @@ func TestMultipartPumpFailure(t *testing.T) {
+ 	up.fh = &flakySink{failAt: len(part1) + len(part2)/2}
+ 
+ 	// Part 2 arrives first so is buffered, then fails part way into the
+-	// sink when part 1 arrives and it is pumped.
++	// sink when part 1 arrives and it is pumped after it.
+ 	_, err = b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+ 	require.NoError(t, err)
+ 	_, err = b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
+-	require.ErrorIs(t, err, errBoom)
++	require.NoError(t, err)
+ 
+ 	// The upload is gone rather than accepting part 2 again.
++	waitIdle(t, up)
+ 	_, err = b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
+ 	require.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
+ }
+ 
++// gatedSink passes writes to the WriteCloser, holding any which would
++// take it past open bytes until gate is closed, and closes blocked when
++// it first holds one. A held write then fails with err if it is set.
++type gatedSink struct {
++	io.WriteCloser
++	open    int
++	written int
++	err     error
++	gate    chan struct{}
++	blocked chan struct{}
++	once    sync.Once
++}
++
++func (s *gatedSink) Write(p []byte) (int, error) {
++	if s.written+len(p) > s.open {
++		s.once.Do(func() { close(s.blocked) })
++		<-s.gate
++		if s.err != nil {
++			return 0, s.err
++		}
++	}
++	s.written += len(p)
++	return s.WriteCloser.Write(p)
++}
++
++func (s *gatedSink) CloseWithError(err error) error {
++	return s.WriteCloser.(interface{ CloseWithError(error) error }).CloseWithError(err)
++}
++
++// waitIdle waits until up has no request or background pump in flight.
++func waitIdle(t *testing.T, up *multipartUpload) {
++	require.Eventually(t, func() bool {
++		up.mu.Lock()
++		defer up.mu.Unlock()
++		return !up.pumping && up.active == 0
++	}, 10*time.Second, time.Millisecond)
++}
++
++// TestMultipartCompleteWaitsForPump checks that a completion which arrives
++// while buffered parts are still being streamed waits for them, as happens
++// when the client gave up on the request streaming them and its resend of
++// that request's part was accepted as already streamed.
++func TestMultipartCompleteWaitsForPump(t *testing.T) {
++	b, f, bucket := newPutTestBackend(t, "", nil)
++	ctx := context.Background()
++	const object = "complete-pumping.bin"
++
++	uploadID, err := b.CreateMultipartUpload(ctx, bucket, object, nil)
++	require.NoError(t, err)
++	up, err := b.loadUpload(ctx, uploadID)
++	require.NoError(t, err)
++	part1 := []byte(random.String(1024))
++	part2 := []byte(random.String(1024))
++	fh, err := up.vfs.Create(up.streamFp)
++	require.NoError(t, err)
++	sink := &gatedSink{WriteCloser: fh, open: len(part1), gate: make(chan struct{}), blocked: make(chan struct{})}
++	up.fh = sink
++	openGate := sync.OnceFunc(func() { close(sink.gate) })
++	t.Cleanup(openGate)
++
++	// Part 2 is buffered, so it is streamed after part 1, and part 1 is
++	// sent again as a client which gave up waiting for it would.
++	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
++	require.NoError(t, err)
++	part1Done := make(chan error, 1)
++	go func() {
++		_, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
++		part1Done <- err
++	}()
++	<-sink.blocked
++
++	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
++	require.NoError(t, err)
++	completeDone := make(chan error, 1)
++	go func() {
++		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
++			{PartNumber: 1, ETag: etag1},
++			{PartNumber: 2, ETag: etag2},
++		}}
++		_, _, err := b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
++		completeDone <- err
++	}()
++	select {
++	case err := <-completeDone:
++		t.Fatalf("completion didn't wait for the buffered part to be streamed (err=%v)", err)
++	case <-time.After(100 * time.Millisecond):
++	}
++
++	openGate()
++	require.NoError(t, <-part1Done)
++	require.NoError(t, <-completeDone)
++	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
++}
++
++// newGatedSinkUpload starts a multipart upload on b whose sink holds
++// writes past the first open bytes until the returned gate is opened.
++func newGatedSinkUpload(t *testing.T, b *s3Backend, bucket, object string, open int) (gofakes3.UploadID, *gatedSink, func()) {
++	uploadID, err := b.CreateMultipartUpload(context.Background(), bucket, object, nil)
++	require.NoError(t, err)
++	up, err := b.loadUpload(context.Background(), uploadID)
++	require.NoError(t, err)
++	fh, err := up.vfs.Create(up.streamFp)
++	require.NoError(t, err)
++	sink := &gatedSink{WriteCloser: fh, open: open, gate: make(chan struct{}), blocked: make(chan struct{})}
++	up.fh = sink
++	openGate := sync.OnceFunc(func() { close(sink.gate) })
++	t.Cleanup(openGate)
++	return uploadID, sink, openGate
++}
++
++// TestMultipartPartNotHeldByPump checks that the request for the part the
++// stream needs is answered once that part is streamed, while the parts
++// buffered after it are streamed in the background, so a client doesn't
++// time out waiting for parts it has already had replies for.
++func TestMultipartPartNotHeldByPump(t *testing.T) {
++	b, f, bucket := newPutTestBackend(t, "", nil)
++	ctx := context.Background()
++	const object = "not-held.bin"
++	part1 := []byte(random.String(1024))
++	part2 := []byte(random.String(1024))
++	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++
++	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
++	require.NoError(t, err)
++	part1Done := make(chan error, 1)
++	var etag1 string
++	go func() {
++		var err error
++		etag1, err = b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
++		part1Done <- err
++	}()
++	<-sink.blocked
++	select {
++	case err := <-part1Done:
++		require.NoError(t, err)
++	case <-time.After(10 * time.Second):
++		t.Fatal("part 1 was held while part 2 was streamed")
++	}
++
++	openGate()
++	input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
++		{PartNumber: 1, ETag: etag1},
++		{PartNumber: 2, ETag: etag2},
++	}}
++	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
++	require.NoError(t, err)
++	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
++}
++
++// TestMultipartPumpFailureNotCommitted checks that a completion waiting
++// for buffered parts to be streamed fails, committing nothing, if they
++// can't be.
++func TestMultipartPumpFailureNotCommitted(t *testing.T) {
++	b, f, bucket := newPutTestBackend(t, "", nil)
++	ctx := context.Background()
++	const object = "pump-failure-complete.bin"
++	part1 := []byte(random.String(1024))
++	part2 := []byte(random.String(1024))
++	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++	up, err := b.loadUpload(ctx, uploadID)
++	require.NoError(t, err)
++
++	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
++	require.NoError(t, err)
++	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
++	require.NoError(t, err)
++	<-sink.blocked
++	completeDone := make(chan error, 1)
++	go func() {
++		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
++			{PartNumber: 1, ETag: etag1},
++			{PartNumber: 2, ETag: etag2},
++		}}
++		_, _, err := b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
++		completeDone <- err
++	}()
++
++	sink.err = errBoom
++	openGate()
++	require.Error(t, <-completeDone)
++	waitIdle(t, up)
++	_, err = b.loadUpload(ctx, uploadID)
++	require.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
++	_, err = f.NewObject(ctx, path.Join(bucket, object))
++	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
++}
++
++// TestMultipartCompleteWaitForPumpEnds checks that a completion waiting
++// for buffered parts to be streamed gives up with ErrSlowDown after
++// multipartWaitTimeout, or when its request is cancelled, leaving the
++// upload to be completed later.
++func TestMultipartCompleteWaitForPumpEnds(t *testing.T) {
++	oldTimeout := multipartWaitTimeout
++	multipartWaitTimeout = 100 * time.Millisecond
++	t.Cleanup(func() { multipartWaitTimeout = oldTimeout })
++	b, f, bucket := newPutTestBackend(t, "", nil)
++	ctx := context.Background()
++	const object = "complete-wait-ends.bin"
++	part1 := []byte(random.String(1024))
++	part2 := []byte(random.String(1024))
++	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++
++	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
++	require.NoError(t, err)
++	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
++	require.NoError(t, err)
++	<-sink.blocked
++	input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
++		{PartNumber: 1, ETag: etag1},
++		{PartNumber: 2, ETag: etag2},
++	}}
++
++	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
++	assert.ErrorIs(t, err, gofakes3.ErrSlowDown)
++	cancelled, cancel := context.WithCancel(ctx)
++	cancel()
++	_, _, err = b.CompleteMultipartUpload(cancelled, bucket, object, uploadID, input)
++	assert.ErrorIs(t, err, context.Canceled)
++
++	openGate()
++	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
++	require.NoError(t, err)
++	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
++}
++
++// TestMultipartForgetWhilePumping checks that uploads can be torn down,
++// as on shutdown, while buffered parts are being streamed in the
++// background, leaving nothing behind.
++func TestMultipartForgetWhilePumping(t *testing.T) {
++	b, f, bucket := newPutTestBackend(t, "", nil)
++	ctx := context.Background()
++	const object = "forget-pumping.bin"
++	part1 := []byte(random.String(1024))
++	part2 := []byte(random.String(1024))
++	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++	up, err := b.loadUpload(ctx, uploadID)
++	require.NoError(t, err)
++
++	_, err = b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
++	require.NoError(t, err)
++	_, err = b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
++	require.NoError(t, err)
++	<-sink.blocked
++
++	b.forgetAllUploads()
++	openGate()
++	waitIdle(t, up)
++	_, err = b.loadUpload(ctx, uploadID)
++	assert.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
++	entries, err := f.List(ctx, bucket)
++	require.NoError(t, err)
++	assert.Empty(t, entries)
++}
++
+ // TestMultipartPartBadMD5 checks that a part whose body doesn't match the
+ // Content-MD5 the client declared is rejected, and that the upload it
+ // corrupted is failed rather than left for the client to retry.
+diff --git a/cmd/serve/s3/s3.go b/cmd/serve/s3/s3.go
+index 4a131be63..57a8a3501 100644
+--- a/cmd/serve/s3/s3.go
++++ b/cmd/serve/s3/s3.go
+@@ -65,6 +65,10 @@ var OptionsInfo = fs.Options{{
+ 	Name:    "multipart_expiry",
+ 	Default: fs.Duration(24 * time.Hour),
+ 	Help:    "Abort incomplete multipart uploads idle for longer than this, 0 to keep forever",
++}, {
++	Name:    "temp_object_expiry",
++	Default: fs.Duration(0),
++	Help:    "On startup remove temporary objects of unfinished uploads older than this, 0 to keep them",
+ }}.
+ 	Add(httplib.ConfigInfo).
+ 	Add(httplib.AuthConfigInfo)
+@@ -82,6 +86,7 @@ type Options struct {
+ 	MultipartMaxUploads           int           `config:"multipart_max_uploads"`
+ 	MetadataMaxObjects            int           `config:"metadata_max_objects"`
+ 	MultipartExpiry               fs.Duration   `config:"multipart_expiry"`
++	TempObjectExpiry              fs.Duration   `config:"temp_object_expiry"`
+ 	DirectoryMarkers              bool          `config:"directory_markers"`
+ 	Auth                          httplib.AuthConfig
+ 	HTTP                          httplib.Config
+diff --git a/cmd/serve/s3/serve_s3.md b/cmd/serve/s3/serve_s3.md
+index d5badaadc..a6d8a66a0 100644
+--- a/cmd/serve/s3/serve_s3.md
++++ b/cmd/serve/s3/serve_s3.md
+@@ -71,6 +71,15 @@ these. If the remote doesn't have the MD5 of objects, `HeadObject`
+ and listings only return the MD5 of objects uploaded through `serve
+ s3` while the object's metadata is kept (see below).
+ 
++On remotes such as `local`, where the MD5 is computed by reading the
++object, an object whose MD5 isn't kept - after a restart, for
++example - is read in full the first time it is listed or fetched, which
++can take minutes for a big object and outlast the client's timeout.
++The MD5 is then kept in memory while the object is unchanged, for at
++most `--metadata-max-objects` objects of each user. To keep the MD5s
++across restarts serve a [hasher](/hasher/) remote wrapping the remote
++instead, or if clients don't need the `ETag` use `--etag-hash ""`.
++
+ ### Quickstart
+ 
+ For a simple set up, to serve `remote:path` over s3, run the server
+@@ -127,7 +136,12 @@ move or copy for this (nearly all do - without move or copy the upload is
+ written directly and a failed PUT may leave a partial object at the key). If
+ `serve s3` is killed part-way through an upload the temporary object (named
+ with a leading `.rclone_temp_put_`) may be left behind; it is hidden from
+-S3 listings but must be removed manually.
++S3 listings and has to be cleaned up as described in
++[Cleaning up temporary objects](#cleaning-up-temporary-objects).
++
++As the old object is only replaced once the new one is complete, replacing
++an object, by either kind of upload, needs free space for both until then:
++a 200 GB object overwritten on `local` needs 400 GB.
+ 
+ ### Multipart uploads
+ 
+@@ -326,6 +340,16 @@ rclone v1.75 named its temporary multipart objects
+ `.rclone_multipart_upload_*`; leftovers from an older server are also
+ hidden from listings and can be cleaned up the same way.
+ 
++Alternatively set `--temp-object-expiry` (for example to `24h`) and the
++server does this itself when it starts: it walks the whole remote in
++the background and removes the temporary objects, of either name, not
++modified for longer than that. On a remote with a lot of objects the
++walk can take a while; requests are served meanwhile. The same advice
++applies to the value as to `--min-age`: if several servers share the
++remote it must be longer than any of them leaves an upload idle, so no
++shorter than their `--multipart-expiry`. It is ignored with
++`--auth-proxy`, where the remotes aren't known until users log in.
++
+ #### Abandoned uploads
+ 
+ A client which starts a multipart upload and vanishes without either
+@@ -398,7 +422,8 @@ make it use unbounded memory.
+   `--s3-upload-concurrency`). Plain `PutObject` uploads use the same
+   while they are in progress.
+ - **Metadata.** The metadata of at most `--metadata-max-objects`
+-  objects of each user is kept, each limited to 2 KB.
++  objects of each user is kept, each limited to 2 KB, and on remotes
++  where hashing reads the object the `ETag` of as many again.
+ - **Request bodies.** The XML bodies of requests such as
+   `CompleteMultipartUpload` and `DeleteObjects` are limited to 10 MiB,
+   and `DeleteObjects` to 1000 keys. A browser form (`POST`) upload
+diff --git a/cmd/serve/s3/server.go b/cmd/serve/s3/server.go
+index 2204681cf..3fd7445f1 100644
+--- a/cmd/serve/s3/server.go
++++ b/cmd/serve/s3/server.go
+@@ -54,6 +54,7 @@ func newServer(ctx context.Context, f fs.Fs, opt *Options, vfsOpt *vfscommon.Opt
+ 		if err != nil {
+ 			if w.backend != nil {
+ 				w.backend.stopReaper()
++				w.backend.stopTempSweep()
+ 			}
+ 			w.provider.Shutdown()
+ 		}
+@@ -110,6 +111,13 @@ func newServer(ctx context.Context, f fs.Fs, opt *Options, vfsOpt *vfscommon.Opt
+ 	} else if w.opt.MultipartMaxUploads > 0 {
+ 		fs.Logf("serve s3", "--multipart-expiry 0 means abandoned multipart uploads are never cleaned up and go on counting towards --multipart-max-uploads %d", w.opt.MultipartMaxUploads)
+ 	}
++	if w.opt.TempObjectExpiry > 0 {
++		if w.provider.IsProxy() {
++			fs.Logf("serve s3", "--temp-object-expiry is ignored with --auth-proxy as the remotes served aren't known until users log in")
++		} else {
++			w.backend.startTempSweep(ctx, f, time.Duration(w.opt.TempObjectExpiry))
++		}
++	}
+ 
+ 	w.handler = w.faker.Server()
+ 
+@@ -232,6 +240,7 @@ func (w *Server) Addr() net.Addr {
+ // Shutdown the server
+ func (w *Server) Shutdown() error {
+ 	w.backend.stopReaper()
++	w.backend.stopTempSweep()
+ 	err := w.server.Shutdown()
+ 	// Uploads in progress hold their VFS so must go first
+ 	w.backend.forgetAllUploads()
+-- 
+2.53.0
+

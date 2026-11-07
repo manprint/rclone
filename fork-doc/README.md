@@ -31,6 +31,7 @@ https://github.com/manprint/rclone/releases; l'immagine dell'ultima release è
 | Documento | Contenuto |
 |-----------|-----------|
 | [uso.md](uso.md) | Guida d'uso: avvio, flag, interfaccia, client WebDAV, ripresa della riproduzione, ricerca, link di download e pubblici, sicurezza, limiti noti |
+| [serve-s3.md](serve-s3.md) | `serve s3` su host da 1 GB / 1 CPU con oggetti grandi: correzioni (backport `07-serve-s3-small-hosts`), flag consigliati per dimensione dei file, esempi dei client, misure |
 | [build.md](build.md) | Build locale del binario e dell'immagine Docker (`build.sh`, `just`) |
 | [../docker-serve-webdav/](../docker-serve-webdav/README.md) | Docker compose pronto per `serve webdav`: `.env` con tutte le variabili, template di `rclone.conf`, guida |
 | [ci-e-release.md](ci-e-release.md) | CI del fork, binari, immagini, attivazione e procedura di release |

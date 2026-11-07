@@ -976,9 +976,9 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
 		etagHash = up.objectMD5.Sum(nil)
 	}
 	_ = up.tenant.storeObjectMeta(up.vfs, up.fp, objectMeta{
-		meta:      up.meta,
-		hash:      etagHash,
-		partSizes: up.listedPartSizes(input),
+		meta:  up.meta,
+		hash:  etagHash,
+		parts: newPartRuns(up.listedPartSizes(input)),
 	})
 	if etagHash == nil {
 		// The upload is complete, so isn't failed if the object can't be read

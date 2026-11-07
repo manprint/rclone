@@ -95,12 +95,44 @@ type tenant struct {
 // modification time the object had when it was stored.
 type objectMeta struct {
 	meta        map[string]string
-	hash        []byte  // the ETag of the object, if not its hash
-	partSizes   []int64 // the sizes of the parts of an object made by a multipart upload
+	hash        []byte   // the ETag of the object, if not its hash
+	parts       partRuns // the sizes of the parts of an object made by a multipart upload
 	size        int64
 	modTime     time.Time
 	dirMarker   bool // a directory marker was put for the directory at this path
 	noDirMarker bool // the directory marker of the directory at this path was deleted, with --directory-markers
+}
+
+// partRuns are the sizes of the parts of an object as runs of parts of
+// the same size, so those of an upload of equal parts take little memory
+// however many parts it has.
+type partRuns []partRun
+
+type partRun struct {
+	size  int64
+	count int
+}
+
+// newPartRuns returns the part sizes as runs.
+func newPartRuns(sizes []int64) (runs partRuns) {
+	for _, size := range sizes {
+		if n := len(runs); n > 0 && runs[n-1].size == size {
+			runs[n-1].count++
+		} else {
+			runs = append(runs, partRun{size: size, count: 1})
+		}
+	}
+	return runs
+}
+
+// sizes returns the size of each part, or nil if there are none.
+func (runs partRuns) sizes() (sizes []int64) {
+	for _, run := range runs {
+		for range run.count {
+			sizes = append(sizes, run.size)
+		}
+	}
+	return sizes
 }
 
 // newMetadataStore makes a store for the metadata of up to maxObjects
@@ -399,7 +431,7 @@ func (b *s3Backend) HeadObject(ctx context.Context, bucketName, objectName strin
 	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
 		maps.Copy(meta, om.meta)
 		hash = om.hash
-		partSizes = om.partSizes
+		partSizes = om.parts.sizes()
 	}
 	if hash == nil {
 		// Only hash the object if its ETag wasn't kept, as on remotes
@@ -497,7 +529,7 @@ func (b *s3Backend) GetObject(ctx context.Context, bucketName, objectName string
 	if om, ok := b.tenant(ctx).getMeta(ctx, fp, node); ok {
 		maps.Copy(meta, om.meta)
 		hash = om.hash
-		partSizes = om.partSizes
+		partSizes = om.parts.sizes()
 	}
 	if hash == nil {
 		// As in HeadObject, only hash the object if its ETag wasn't kept

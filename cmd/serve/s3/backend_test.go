@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -528,5 +529,27 @@ func TestFileDirConflicts(t *testing.T) {
 	} {
 		err := test.call(test.key)
 		assert.True(t, gofakes3.HasErrorCode(err, gofakes3.ErrInvalidRequest), "%s: %v", test.key, err)
+	}
+}
+
+// TestPartRuns checks the part sizes of multipart objects are stored as
+// runs of parts of the same size and read back as they were.
+func TestPartRuns(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sizes []int64
+		runs  int
+	}{
+		{"none", nil, 0},
+		{"one", []int64{7}, 1},
+		{"uniform", []int64{5, 5, 5, 5}, 1},
+		{"uniform short last", append(slices.Repeat([]int64{64 << 20}, 9999), 1), 2},
+		{"irregular", []int64{3, 1, 1, 2, 2, 2, 3}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runs := newPartRuns(tc.sizes)
+			assert.Len(t, runs, tc.runs)
+			assert.Equal(t, tc.sizes, runs.sizes())
+		})
 	}
 }

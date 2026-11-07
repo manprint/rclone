@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -48,6 +49,10 @@ var OptionsInfo = fs.Options{{
 	Name:    "disable_zip",
 	Default: false,
 	Help:    "Disable zip download of directories",
+}, {
+	Name:    "disable_depth_infinity",
+	Default: false,
+	Help:    "Reject PROPFIND requests for a whole directory tree (Depth: infinity)",
 }}.
 	Add(libhttp.ConfigInfo).
 	Add(libhttp.AuthConfigInfo).
@@ -55,12 +60,13 @@ var OptionsInfo = fs.Options{{
 
 // Options required for http server
 type Options struct {
-	Auth           libhttp.AuthConfig
-	HTTP           libhttp.Config
-	Template       libhttp.TemplateConfig
-	EtagHash       string `config:"etag_hash"`
-	DisableDirList bool   `config:"disable_dir_list"`
-	DisableZip     bool   `config:"disable_zip"`
+	Auth                 libhttp.AuthConfig
+	HTTP                 libhttp.Config
+	Template             libhttp.TemplateConfig
+	EtagHash             string `config:"etag_hash"`
+	DisableDirList       bool   `config:"disable_dir_list"`
+	DisableZip           bool   `config:"disable_zip"`
+	DisableDepthInfinity bool   `config:"disable_depth_infinity"`
 }
 
 // Opt is options set by command line flags
@@ -120,6 +126,15 @@ If this flag is set to "auto" then rclone will choose the first
 supported hash on the backend or you can use a named hash such as
 "MD5" or "SHA-1". Use the [hashsum](/commands/rclone_hashsum/) command
 to see the full list.
+
+#### --disable-depth-infinity
+
+A PROPFIND request with ` + "`Depth: infinity`" + `, or with no Depth header,
+lists the whole directory tree in a single response. On a big tree this
+reads every directory and keeps all of them in the directory cache, which
+can use a lot of memory. With this flag such requests are rejected with
+a 403 Forbidden and a ` + "`propfind-finite-depth`" + ` error, as RFC 4918
+allows, so clients list one level at a time with ` + "`Depth: 1`" + `.
 
 ### Gzip compression
 
@@ -419,6 +434,16 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		fs.Infof(urlPath, "%s from %s rejected: %v", r.Method, r.RemoteAddr, err)
 		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
+	}
+	if w.opt.DisableDepthInfinity && r.Method == "PROPFIND" {
+		// The webdav handler treats a missing Depth as infinity
+		if depth := r.Header.Get("Depth"); depth == "" || depth == "infinity" {
+			fs.Infof(urlPath, "%s with Depth infinity from %s rejected", r.Method, r.RemoteAddr)
+			rw.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			rw.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(rw, `<?xml version="1.0" encoding="utf-8"?>`+"\n"+`<D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>`)
+			return
+		}
 	}
 	isDir := strings.HasSuffix(urlPath, "/")
 	remote := strings.Trim(urlPath, "/")

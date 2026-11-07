@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -722,4 +723,41 @@ func testPathTraversal(t *testing.T, baseURL string) {
 		fstest.NewItem("served-root/inside.txt", "INSIDE", modTime),
 		fstest.NewItem("served-root/dir/inside-dir.txt", "INSIDE DIR", modTime),
 	}, []string{"served-root", "served-root/dir"}, fs.GetModifyWindow(ctx, outside))
+}
+
+func TestDisableDepthInfinity(t *testing.T) {
+	ctx := context.Background()
+	f, err := fs.NewFs(ctx, ":memory:webdav-depth-test")
+	require.NoError(t, err)
+	_, err = operations.Rcat(ctx, f, "dir/file.txt", io.NopCloser(strings.NewReader("DATA")), fstest.Time("2001-02-03T04:05:06Z"), nil)
+	require.NoError(t, err)
+
+	for _, disable := range []bool{false, true} {
+		t.Run("DisableDepthInfinity="+strconv.FormatBool(disable), func(t *testing.T) {
+			opt := Opt
+			opt.HTTP.ListenAddr = []string{"localhost:0"}
+			opt.DisableDepthInfinity = disable
+			w, err := newWebDAV(ctx, f, &opt, &vfscommon.Opt, &proxy.Opt)
+			require.NoError(t, err)
+			w.server.Serve()
+			defer func() {
+				assert.NoError(t, w.Shutdown())
+			}()
+			for _, depth := range []string{"", "infinity", "1", "0"} {
+				req := httptest.NewRequest("PROPFIND", "/", nil)
+				if depth != "" {
+					req.Header.Set("Depth", depth)
+				}
+				rec := httptest.NewRecorder()
+				w.server.Router().ServeHTTP(rec, req)
+				if disable && (depth == "" || depth == "infinity") {
+					assert.Equal(t, http.StatusForbidden, rec.Code, "Depth %q", depth)
+					assert.Contains(t, rec.Body.String(), "<D:propfind-finite-depth/>", "Depth %q", depth)
+				} else {
+					assert.Equal(t, http.StatusMultiStatus, rec.Code, "Depth %q", depth)
+					assert.Equal(t, depth == "" || depth == "infinity", strings.Contains(rec.Body.String(), "file.txt"), "Depth %q", depth)
+				}
+			}
+		})
+	}
 }

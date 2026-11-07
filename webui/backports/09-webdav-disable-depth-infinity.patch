@@ -1,0 +1,153 @@
+From dc74870e309b159cb05f4d833d860011fc922b25 Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Sat, 7 Nov 2026 14:09:07 +0100
+Subject: [PATCH] serve webdav: add --disable-depth-infinity to stop whole tree
+ listings using lots of memory (backport)
+
+A PROPFIND with Depth: infinity, or with no Depth header, lists the
+whole tree in one response. On a big tree this reads every directory
+into the directory cache, using memory in proportion to the number of
+files, which can run a small host out of memory.
+
+With --disable-depth-infinity these requests are rejected with 403 and
+a propfind-finite-depth error, as allowed by RFC 4918, and clients list
+one level at a time with Depth: 1. The default is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ cmd/serve/webdav/webdav.go      | 37 ++++++++++++++++++++++++++------
+ cmd/serve/webdav/webdav_test.go | 38 +++++++++++++++++++++++++++++++++
+ 2 files changed, 69 insertions(+), 6 deletions(-)
+
+diff --git a/cmd/serve/webdav/webdav.go b/cmd/serve/webdav/webdav.go
+index 376f1f3ff..8a5f9ac9b 100644
+--- a/cmd/serve/webdav/webdav.go
++++ b/cmd/serve/webdav/webdav.go
+@@ -5,6 +5,7 @@ import (
+ 	"context"
+ 	"encoding/xml"
+ 	"fmt"
++	"io"
+ 	"mime"
+ 	"net"
+ 	"net/http"
+@@ -48,6 +49,10 @@ var OptionsInfo = fs.Options{{
+ 	Name:    "disable_zip",
+ 	Default: false,
+ 	Help:    "Disable zip download of directories",
++}, {
++	Name:    "disable_depth_infinity",
++	Default: false,
++	Help:    "Reject PROPFIND requests for a whole directory tree (Depth: infinity)",
+ }}.
+ 	Add(libhttp.ConfigInfo).
+ 	Add(libhttp.AuthConfigInfo).
+@@ -55,12 +60,13 @@ var OptionsInfo = fs.Options{{
+ 
+ // Options required for http server
+ type Options struct {
+-	Auth           libhttp.AuthConfig
+-	HTTP           libhttp.Config
+-	Template       libhttp.TemplateConfig
+-	EtagHash       string `config:"etag_hash"`
+-	DisableDirList bool   `config:"disable_dir_list"`
+-	DisableZip     bool   `config:"disable_zip"`
++	Auth                 libhttp.AuthConfig
++	HTTP                 libhttp.Config
++	Template             libhttp.TemplateConfig
++	EtagHash             string `config:"etag_hash"`
++	DisableDirList       bool   `config:"disable_dir_list"`
++	DisableZip           bool   `config:"disable_zip"`
++	DisableDepthInfinity bool   `config:"disable_depth_infinity"`
+ }
+ 
+ // Opt is options set by command line flags
+@@ -121,6 +127,15 @@ supported hash on the backend or you can use a named hash such as
+ "MD5" or "SHA-1". Use the [hashsum](/commands/rclone_hashsum/) command
+ to see the full list.
+ 
++#### --disable-depth-infinity
++
++A PROPFIND request with ` + "`Depth: infinity`" + `, or with no Depth header,
++lists the whole directory tree in a single response. On a big tree this
++reads every directory and keeps all of them in the directory cache, which
++can use a lot of memory. With this flag such requests are rejected with
++a 403 Forbidden and a ` + "`propfind-finite-depth`" + ` error, as RFC 4918
++allows, so clients list one level at a time with ` + "`Depth: 1`" + `.
++
+ ### Gzip compression
+ 
+ The server will compress certain response bodies (text and XML, including
+@@ -417,6 +432,16 @@ func (w *WebDAV) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+ 		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+ 		return
+ 	}
++	if w.opt.DisableDepthInfinity && r.Method == "PROPFIND" {
++		// The webdav handler treats a missing Depth as infinity
++		if depth := r.Header.Get("Depth"); depth == "" || depth == "infinity" {
++			fs.Infof(urlPath, "%s with Depth infinity from %s rejected", r.Method, r.RemoteAddr)
++			rw.Header().Set("Content-Type", "application/xml; charset=utf-8")
++			rw.WriteHeader(http.StatusForbidden)
++			_, _ = io.WriteString(rw, `<?xml version="1.0" encoding="utf-8"?>`+"\n"+`<D:error xmlns:D="DAV:"><D:propfind-finite-depth/></D:error>`)
++			return
++		}
++	}
+ 	isDir := strings.HasSuffix(urlPath, "/")
+ 	remote := strings.Trim(urlPath, "/")
+ 	if !w.opt.DisableDirList && (r.Method == "GET" || r.Method == "HEAD") && isDir {
+diff --git a/cmd/serve/webdav/webdav_test.go b/cmd/serve/webdav/webdav_test.go
+index 8b10c9890..7b885c00c 100644
+--- a/cmd/serve/webdav/webdav_test.go
++++ b/cmd/serve/webdav/webdav_test.go
+@@ -16,6 +16,7 @@ import (
+ 	"net/http/httptest"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
+ 	"strings"
+ 	"testing"
+ 
+@@ -723,3 +724,40 @@ func testPathTraversal(t *testing.T, baseURL string) {
+ 		fstest.NewItem("served-root/dir/inside-dir.txt", "INSIDE DIR", modTime),
+ 	}, []string{"served-root", "served-root/dir"}, fs.GetModifyWindow(ctx, outside))
+ }
++
++func TestDisableDepthInfinity(t *testing.T) {
++	ctx := context.Background()
++	f, err := fs.NewFs(ctx, ":memory:webdav-depth-test")
++	require.NoError(t, err)
++	_, err = operations.Rcat(ctx, f, "dir/file.txt", io.NopCloser(strings.NewReader("DATA")), fstest.Time("2001-02-03T04:05:06Z"), nil)
++	require.NoError(t, err)
++
++	for _, disable := range []bool{false, true} {
++		t.Run("DisableDepthInfinity="+strconv.FormatBool(disable), func(t *testing.T) {
++			opt := Opt
++			opt.HTTP.ListenAddr = []string{"localhost:0"}
++			opt.DisableDepthInfinity = disable
++			w, err := newWebDAV(ctx, f, &opt, &vfscommon.Opt, &proxy.Opt)
++			require.NoError(t, err)
++			w.server.Serve()
++			defer func() {
++				assert.NoError(t, w.Shutdown())
++			}()
++			for _, depth := range []string{"", "infinity", "1", "0"} {
++				req := httptest.NewRequest("PROPFIND", "/", nil)
++				if depth != "" {
++					req.Header.Set("Depth", depth)
++				}
++				rec := httptest.NewRecorder()
++				w.server.Router().ServeHTTP(rec, req)
++				if disable && (depth == "" || depth == "infinity") {
++					assert.Equal(t, http.StatusForbidden, rec.Code, "Depth %q", depth)
++					assert.Contains(t, rec.Body.String(), "<D:propfind-finite-depth/>", "Depth %q", depth)
++				} else {
++					assert.Equal(t, http.StatusMultiStatus, rec.Code, "Depth %q", depth)
++					assert.Equal(t, depth == "" || depth == "infinity", strings.Contains(rec.Body.String(), "file.txt"), "Depth %q", depth)
++				}
++			}
++		})
++	}
++}
+-- 
+2.53.0
+

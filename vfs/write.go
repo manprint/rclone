@@ -23,6 +23,8 @@ type WriteFileHandle struct {
 	pipeWriter  *io.PipeWriter
 	o           fs.Object
 	result      chan error
+	uploadDone  chan struct{} // closed once the upload has finished
+	uploadErr   error         // the upload's error, set before uploadDone is closed
 	file        *File
 	ctx         context.Context    // the streaming upload runs under this
 	cancel      context.CancelFunc // fails the streaming upload, unblocking a stalled write
@@ -46,10 +48,11 @@ func newWriteFileHandle(d *Dir, f *File, remote string, flags int) (*WriteFileHa
 		remote += fs.LinkSuffix
 	}
 	fh := &WriteFileHandle{
-		remote: remote,
-		flags:  flags,
-		result: make(chan error, 1),
-		file:   f,
+		remote:     remote,
+		flags:      flags,
+		result:     make(chan error, 1),
+		uploadDone: make(chan struct{}),
+		file:       f,
 	}
 	fh.ctx, fh.cancel = context.WithCancel(f.ctx)
 	fh.cond = sync.Cond{L: &fh.mu}
@@ -84,6 +87,8 @@ func (fh *WriteFileHandle) openPending() (err error) {
 		// process would die, and if it were recovered without reporting then
 		// whoever is waiting on the result would wait forever.
 		defer func() {
+			fh.uploadErr = err
+			close(fh.uploadDone)
 			// Close the pipeReader so the pipeWriter fails with ErrClosedPipe
 			_ = pipeReader.Close()
 			fh.o = o
@@ -152,6 +157,14 @@ func (fh *WriteFileHandle) writeAt(p []byte, off int64) (n int, err error) {
 		waitSequential("write", fh.remote, &fh.cond, time.Duration(fh.file.VFS().Opt.WriteWait), &fh.offset, off)
 	}
 	if fh.offset != off {
+		select {
+		case <-fh.uploadDone:
+			// The upload failed before reaching off, so report why
+			if fh.uploadErr != nil {
+				return 0, fh.uploadErr
+			}
+		default:
+		}
 		fs.Errorf(fh.remote, "WriteFileHandle.Write: can't seek in file without --vfs-cache-mode >= writes")
 		return 0, ESPIPE
 	}
@@ -163,6 +176,14 @@ func (fh *WriteFileHandle) writeAt(p []byte, off int64) (n int, err error) {
 	fh.offset += int64(n)
 	fh.file.setSize(fh.offset)
 	if err != nil {
+		if errors.Is(err, io.ErrClosedPipe) {
+			// The upload closes the pipe as it returns, so wait for it
+			// and report why it stopped
+			<-fh.uploadDone
+			if fh.uploadErr != nil {
+				err = fh.uploadErr
+			}
+		}
 		fs.Errorf(fh.remote, "WriteFileHandle.Write error: %v", err)
 		return 0, err
 	}
@@ -235,6 +256,13 @@ func (fh *WriteFileHandle) closeWithError(reason error) (err error) {
 		fh.file.setObject(fh.o)
 		err = writeCloseErr
 	} else {
+		if o := fh.file.getObject(); o != nil {
+			// The failed upload may have removed the file it was replacing.
+			// Use the file's context as fh.ctx may have been cancelled.
+			if _, findErr := fh.file.Fs().NewObject(fh.file.ctx, o.Remote()); errors.Is(findErr, fs.ErrorObjectNotFound) {
+				fh.file.setObject(nil)
+			}
+		}
 		if fh.file.getObject() == nil {
 			// Remove vfs file entry when no object is present
 			_ = fh.file.Remove()

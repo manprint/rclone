@@ -1,0 +1,213 @@
+From 02145c353817ca41dc9fdc0a9ffc6ff132ef701b Mon Sep 17 00:00:00 2001
+From: Fabio <fabio@git.it>
+Date: Sat, 7 Nov 2026 15:24:34 +0100
+Subject: [PATCH] vfs: report why a streaming upload failed and stop listing
+ files it removed (backport)
+
+When a streaming upload failed, for example because the disk filled up,
+writes to the file returned "io: read/write on closed pipe", or "can't
+seek in file" for writes out of order, rather than the reason the upload
+failed. They now return the upload's error.
+
+When a failed upload replacing a file removed the old file, as the local
+backend does, the old file was still listed until the directory cache
+expired. It is now removed from the listing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ vfs/write.go      | 36 +++++++++++++++--
+ vfs/write_test.go | 99 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 131 insertions(+), 4 deletions(-)
+
+diff --git a/vfs/write.go b/vfs/write.go
+index b370d148a..ece7e1de8 100644
+--- a/vfs/write.go
++++ b/vfs/write.go
+@@ -23,6 +23,8 @@ type WriteFileHandle struct {
+ 	pipeWriter  *io.PipeWriter
+ 	o           fs.Object
+ 	result      chan error
++	uploadDone  chan struct{} // closed once the upload has finished
++	uploadErr   error         // the upload's error, set before uploadDone is closed
+ 	file        *File
+ 	ctx         context.Context    // the streaming upload runs under this
+ 	cancel      context.CancelFunc // fails the streaming upload, unblocking a stalled write
+@@ -46,10 +48,11 @@ func newWriteFileHandle(d *Dir, f *File, remote string, flags int) (*WriteFileHa
+ 		remote += fs.LinkSuffix
+ 	}
+ 	fh := &WriteFileHandle{
+-		remote: remote,
+-		flags:  flags,
+-		result: make(chan error, 1),
+-		file:   f,
++		remote:     remote,
++		flags:      flags,
++		result:     make(chan error, 1),
++		uploadDone: make(chan struct{}),
++		file:       f,
+ 	}
+ 	fh.ctx, fh.cancel = context.WithCancel(f.ctx)
+ 	fh.cond = sync.Cond{L: &fh.mu}
+@@ -84,6 +87,8 @@ func (fh *WriteFileHandle) openPending() (err error) {
+ 		// process would die, and if it were recovered without reporting then
+ 		// whoever is waiting on the result would wait forever.
+ 		defer func() {
++			fh.uploadErr = err
++			close(fh.uploadDone)
+ 			// Close the pipeReader so the pipeWriter fails with ErrClosedPipe
+ 			_ = pipeReader.Close()
+ 			fh.o = o
+@@ -152,6 +157,14 @@ func (fh *WriteFileHandle) writeAt(p []byte, off int64) (n int, err error) {
+ 		waitSequential("write", fh.remote, &fh.cond, time.Duration(fh.file.VFS().Opt.WriteWait), &fh.offset, off)
+ 	}
+ 	if fh.offset != off {
++		select {
++		case <-fh.uploadDone:
++			// The upload failed before reaching off, so report why
++			if fh.uploadErr != nil {
++				return 0, fh.uploadErr
++			}
++		default:
++		}
+ 		fs.Errorf(fh.remote, "WriteFileHandle.Write: can't seek in file without --vfs-cache-mode >= writes")
+ 		return 0, ESPIPE
+ 	}
+@@ -163,6 +176,14 @@ func (fh *WriteFileHandle) writeAt(p []byte, off int64) (n int, err error) {
+ 	fh.offset += int64(n)
+ 	fh.file.setSize(fh.offset)
+ 	if err != nil {
++		if errors.Is(err, io.ErrClosedPipe) {
++			// The upload closes the pipe as it returns, so wait for it
++			// and report why it stopped
++			<-fh.uploadDone
++			if fh.uploadErr != nil {
++				err = fh.uploadErr
++			}
++		}
+ 		fs.Errorf(fh.remote, "WriteFileHandle.Write error: %v", err)
+ 		return 0, err
+ 	}
+@@ -235,6 +256,13 @@ func (fh *WriteFileHandle) closeWithError(reason error) (err error) {
+ 		fh.file.setObject(fh.o)
+ 		err = writeCloseErr
+ 	} else {
++		if o := fh.file.getObject(); o != nil {
++			// The failed upload may have removed the file it was replacing.
++			// Use the file's context as fh.ctx may have been cancelled.
++			if _, findErr := fh.file.Fs().NewObject(fh.file.ctx, o.Remote()); errors.Is(findErr, fs.ErrorObjectNotFound) {
++				fh.file.setObject(nil)
++			}
++		}
+ 		if fh.file.getObject() == nil {
+ 			// Remove vfs file entry when no object is present
+ 			_ = fh.file.Remove()
+diff --git a/vfs/write_test.go b/vfs/write_test.go
+index b49d2cb70..c3de665ce 100644
+--- a/vfs/write_test.go
++++ b/vfs/write_test.go
+@@ -504,3 +504,102 @@ func TestWriteFileHandleCloseWithErrorStalled(t *testing.T) {
+ 		t.Fatal("the blocked write was never unblocked")
+ 	}
+ }
++
++// failingFs is an Fs whose streaming uploads fail with errUploadFailed
++// after reading a little of their input.
++type failingFs struct {
++	fs.Fs
++	features *fs.Features
++	// replaces makes uploads read all their input and remove the file
++	// they are replacing before failing, as the local backend does,
++	// closing started once they have begun
++	replaces bool
++	started  chan struct{}
++}
++
++var errUploadFailed = errors.New("upload failed")
++
++func newFailingFs(base fs.Fs) *failingFs {
++	f := &failingFs{Fs: base}
++	features := *base.Features()
++	features.PutStream = f.PutStream
++	f.features = &features
++	return f
++}
++
++// Features returns the optional features of this Fs
++func (f *failingFs) Features() *fs.Features { return f.features }
++
++// PutStream reads a little of in then fails.
++func (f *failingFs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
++	if !f.replaces {
++		_, _ = in.Read(make([]byte, 1024))
++		return nil, errUploadFailed
++	}
++	close(f.started)
++	_, err := io.Copy(io.Discard, in)
++	if o, findErr := f.NewObject(ctx, src.Remote()); findErr == nil {
++		_ = o.Remove(ctx)
++	}
++	if err == nil {
++		err = errUploadFailed
++	}
++	return nil, err
++}
++
++// TestWriteFileHandleUploadFailed checks that writes after the upload has
++// failed return the error the upload failed with.
++func TestWriteFileHandleUploadFailed(t *testing.T) {
++	r := fstest.NewRun(t)
++	opt := vfscommon.Opt
++	opt.WriteWait += 2 * fs.Duration(time.Millisecond)
++	vfs := New(context.Background(), newFailingFs(r.Fremote), &opt)
++	t.Cleanup(vfs.Shutdown)
++
++	h, err := vfs.OpenFile("failed", os.O_WRONLY|os.O_CREATE, 0777)
++	require.NoError(t, err)
++	buf := make([]byte, 1<<20)
++	for range 64 {
++		if _, err = h.Write(buf); err != nil {
++			break
++		}
++	}
++	require.ErrorIs(t, err, errUploadFailed)
++	// An out of order write reports the failure too
++	_, err = h.WriteAt(buf, 1<<40)
++	require.ErrorIs(t, err, errUploadFailed)
++	require.ErrorIs(t, h.Close(), errUploadFailed)
++}
++
++// TestWriteFileHandleFailedReplace checks that a file is no longer listed
++// once a failed upload replacing it has removed it.
++func TestWriteFileHandleFailedReplace(t *testing.T) {
++	for _, abandon := range []bool{false, true} {
++		t.Run(map[bool]string{false: "failed", true: "abandoned"}[abandon], func(t *testing.T) {
++			r := fstest.NewRun(t)
++			r.WriteObject(context.Background(), "file", "old contents", t1)
++			f := newFailingFs(r.Fremote)
++			f.replaces = true
++			f.started = make(chan struct{})
++			vfs := New(context.Background(), f, &vfscommon.Opt)
++			t.Cleanup(vfs.Shutdown)
++			_, err := vfs.Stat("file")
++			require.NoError(t, err)
++
++			h, err := vfs.OpenFile("file", os.O_WRONLY|os.O_TRUNC, 0777)
++			require.NoError(t, err)
++			_, err = h.Write(make([]byte, 1<<20))
++			require.NoError(t, err)
++			if abandon {
++				<-f.started
++				err = h.(*WriteFileHandle).CloseWithError(errors.New("abandoned"))
++			} else {
++				err = h.Close()
++			}
++			require.Error(t, err)
++
++			_, err = vfs.Stat("file")
++			assert.Equal(t, ENOENT, err, "the removed file must not be listed")
++		})
++	}
++}
+-- 
+2.53.0
+

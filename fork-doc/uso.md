@@ -514,12 +514,13 @@ Il fork include, come [backport](sviluppo.md#backport-da-upstream), correzioni d
 upstream che riguardano `serve` e `mount`:
 
 - la lettura di una cartella non blocca la cartella che la contiene (vedi sopra);
-- un file in cache modificato e letto di continuo viene comunque caricato sul remote: prima ogni lettura
-  rimandava l'upload (rclone/rclone#9979);
 - con `--vfs-read-chunk-streams` 2 o più, un flusso che fallisce o una lettura annullata non bloccano più
   la lettura per sempre (rclone/rclone#10172);
 - un file che il remote tronca a metà lettura dà un errore invece di essere letto, e messo in cache, come
   completo (rclone/rclone#10127).
+
+Da v1.76.0 la correzione degli upload mai avviati mentre un file in cache modificato continua a essere
+letto (rclone/rclone#9979) è in upstream e il fork non la porta più come backport.
 
 ## Limiti noti
 

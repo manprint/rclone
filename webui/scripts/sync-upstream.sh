@@ -102,6 +102,8 @@ go build ./...
 echo "sync-upstream: tests"
 go test ./webui/... ./cmd/serve/webdav/ ./lib/http/...
 echo "sync-upstream: tests with the web UI off"
-RCLONE_WEBUI=false go test ./cmd/serve/webdav/
+# -count=1: the tests read RCLONE_WEBUI in init(), which the test cache does
+# not track, so a cached run would repeat the result with the UI on.
+RCLONE_WEBUI=false go test -count=1 ./cmd/serve/webdav/
 
 echo "sync-upstream: OK, $REF merged and checks passed (nothing pushed)"

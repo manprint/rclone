@@ -320,7 +320,8 @@ di `memory.stat` del cgroup, cioè la memoria del processo senza page cache.
 - **Timeout HTTP**: `--server-read-timeout` e `--server-write-timeout` (default `1h`) limitano il tempo
   senza progressi di una richiesta o di una risposta, non la sua durata (backport `08-http-progress-timeouts`,
   vedi [serve-webdav.md](serve-webdav.md#2-timeout-dei-trasferimenti)): un GET di un oggetto grande può durare
-  più di un'ora.
+  più di un'ora. Misura con `--server-write-timeout 10s` e GET da 30 MiB a 1 MiB/s: senza il backport la
+  risposta si interrompe a 20,6 s dopo 21.544.032 byte, con il backport arriva intera in 29,6 s (md5 uguale).
 
 ---
 

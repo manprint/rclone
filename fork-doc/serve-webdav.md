@@ -21,8 +21,8 @@ Tutti i numeri qui sotto sono misurati, con il metodo descritto in [Riprodurre l
 | Buffer di lettura di 16 MiB per trasferimento | 16 trasferimenti paralleli: 369 MiB | `--buffer-size 4M --use-mmap`: 80 MiB, stessa velocità |
 
 Verificati e lasciati invariati: lo zip delle cartelle dell'interfaccia web (deflate costa poco anche su file già
-compressi) e la compressione gzip delle risposte (utile sui PROPFIND, costosa sui file di testo grandi: si spegne
-dal client).
+compressi), la compressione gzip delle risposte (utile sui PROPFIND, costosa sui file di testo grandi: si spegne
+dal client), l'elenco, la ricerca e l'upload dell'interfaccia web (vedi [sezione 6](#6-interfaccia-web-e-compressione)).
 
 ### Test aggiunti
 
@@ -132,7 +132,35 @@ tutte e tre le configurazioni. `--buffer-size 4M` non costa CPU con `serve webda
 
 ---
 
-## 6. Compressione gzip e zip dell'interfaccia web
+## 6. Interfaccia web e compressione
+
+### Elenco, ricerca e upload
+
+| Operazione | Risultato | Tempo | CPU del server | Picco di memoria |
+|---|---|---|---|---|
+| elenco di una cartella con 20.000 file (`?json`) | 1.940.388 byte | 0,2 s | 257 ms | 64 MiB |
+| ricerca su un albero di 200.201 voci, default | 200 risultati, albero visitato tutto | 1,7 s | 1706 ms | 196 MiB |
+| stessa ricerca, `--webui-search-max-results 100` | 100 risultati | 0,9 s | 882 ms | 108 MiB |
+
+La ricerca visita le cartelle in ampiezza attraverso la VFS, quindi la memoria è quella della cache delle
+cartelle (vedi [sezione 3](#3-propfind-sullintero-albero-e-cache-delle-cartelle)) e si libera allo stesso modo
+dopo `--dir-cache-time`. La visita si ferma al primo dei tre limiti: `--webui-search-max-results` (default
+1000), `--webui-search-max-depth` (default 8) e `--webui-search-timeout` (default 30s). Una ricerca con pochi
+risultati visita tutto l'albero fino a profondità e timeout: su alberi molto grandi e host da 1 GB conviene
+ridurre `--webui-search-max-depth` o, se la ricerca non serve, `--webui-search=false`.
+
+L'upload dall'interfaccia web (PUT con intestazione `Origin`) passa dallo stesso percorso di `operations.Rcat`
+dei client WebDAV, con il doppio MD5. PUT da 1 GiB:
+
+| | Interfaccia web | Client WebDAV |
+|---|---|---|
+| default | 4861 ms | 4461 ms |
+| `--ignore-checksum` | 1903 ms | 1761 ms |
+
+Memoria anonima massima 34 MiB in tutti e quattro i casi: il corpo della richiesta va sul disco senza essere
+accumulato.
+
+### Gzip e zip
 
 Il server comprime con gzip le risposte `text/*` e XML (PROPFIND compresi) se il client manda
 `Accept-Encoding: gzip`. Il client `webdav` di rclone lo manda sempre.
@@ -174,6 +202,7 @@ GOMEMLIMIT=600MiB rclone serve webdav /srv/data \
 | `--disable-depth-infinity` | una richiesta non può leggere tutto l'albero |
 | `--dir-cache-time 1m` | la cache delle cartelle (0,8 KB per voce) si libera prima |
 | `--vfs-cache-mode off` (default) | gli upload vanno direttamente sul disco, senza copia in cache |
+| `--webui-search-max-depth` più basso o `--webui-search=false` | su alberi molto grandi la ricerca riempie la cache delle cartelle (vedi [sezione 6](#6-interfaccia-web-e-compressione)) |
 
 Lato client rclone, in rete locale: `--no-gzip-encoding` per non far comprimere i file di testo al server.
 

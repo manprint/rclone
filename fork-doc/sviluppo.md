@@ -214,6 +214,17 @@ RCLONE_WEBUI=false go test ./cmd/serve/webdav/    # la suite upstream con l'inte
 webui/scripts/check-footprint.sh
 ```
 
+La suite completa è `RCLONE_CONFIG=/notfound go test ./...` (quella che la CI esegue con
+`make quicktest`). Due pacchetti dipendono dall'ambiente, non dal fork, e falliscono identici su
+`upstream/master` in una sandbox:
+
+- `cmd/serve/nfs` usa `name_to_handle_at`, che vuole un file system con gli handle (ext4, tmpfs):
+  con `TMPDIR` su overlayfs i suoi test symlink falliscono. Eseguila con `TMPDIR` su un tmpfs
+  (`mount -t tmpfs -o size=8G none <dir>`), oppure aspettati `TestCache/symlink` e
+  `TestPathRewriterHandleStability/symlink` falliti.
+- `cmd/nfsmount` monta un NFS vero: senza il modulo kernel `nfs` (`grep nfs /proc/filesystems`)
+  fallisce con `unknown filesystem type 'nfs'`.
+
 Il secondo giro di `cmd/serve/webdav` con `RCLONE_WEBUI=false` dimostra che a interfaccia spenta il
 comportamento è quello upstream. Prima di consegnare conviene anche `go test -race` sugli stessi pacchetti
 e `golangci-lint run ./webui/... ./cmd/serve/webdav/...`.

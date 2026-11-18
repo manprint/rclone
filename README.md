@@ -24,6 +24,7 @@ directories to and from different cloud storage providers.
 ## Storage providers
 
 - 1Fichier [:page_facing_up:](https://rclone.org/fichier/)
+- Abrha Storage [:page_facing_up:](https://rclone.org/s3/#abrhastorage)
 - Akamai Netstorage [:page_facing_up:](https://rclone.org/netstorage/)
 - Alibaba Cloud (Aliyun) Object Storage System (OSS) [:page_facing_up:](https://rclone.org/s3/#alibaba-oss)
 - Amazon S3 [:page_facing_up:](https://rclone.org/s3/)
@@ -62,6 +63,7 @@ directories to and from different cloud storage providers.
 - Hetzner Object Storage [:page_facing_up:](https://rclone.org/s3/#hetzner)
 - Hetzner Storage Box [:page_facing_up:](https://rclone.org/sftp/#hetzner-storage-box)
 - HiDrive [:page_facing_up:](https://rclone.org/hidrive/)
+- Hippius [:page_facing_up:](https://rclone.org/s3/#hippius)
 - Hitachi Content Platform (HCP) [:page_facing_up:](https://rclone.org/s3/#hcp)
 - HTTP [:page_facing_up:](https://rclone.org/http/)
 - Huawei Cloud Object Storage Service(OBS) [:page_facing_up:](https://rclone.org/s3/#huawei-obs)

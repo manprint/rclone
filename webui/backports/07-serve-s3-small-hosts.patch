@@ -6,12 +6,12 @@ Subject: [PATCH] serve s3: use less memory and CPU with big objects on small
 
 Patch of the fork proposed to upstream, carried as
 webui/backports/07-serve-s3-small-hosts.patch: it is the squash of the
-serve s3 commits of the fork, documented in fork-doc/serve-s3.md.
+serve s3 commits of the fork, documented in fork-doc/serve-s3.md,
+rebased on the upstream s3 code which now waits for the buffered parts
+before completing an upload (cmd/serve/s3/multipart.go close(ctx)).
 
 - don't read the whole object to hash it on HEAD and GET when its ETag
   is kept, nor every few minutes once the VFS directory cache expires
-- fix multipart uploads failing with InvalidPart when a part request
-  timed out while the buffered parts after it were being written
 - write buffered parts in the background, so a part request no longer
   waits for the parts after it
 - use less memory to remember the parts of big multipart objects
@@ -21,14 +21,14 @@ serve s3 commits of the fork, documented in fork-doc/serve-s3.md.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- cmd/serve/s3/backend.go        | 151 ++++++++++++++++---
- cmd/serve/s3/backend_test.go   | 208 ++++++++++++++++++++++++++
- cmd/serve/s3/multipart.go      |  68 ++++++++-
- cmd/serve/s3/multipart_test.go | 259 ++++++++++++++++++++++++++++++++-
+ cmd/serve/s3/backend.go        | 151 ++++++++++++++++++++++++++----
+ cmd/serve/s3/backend_test.go   | 208 +++++++++++++++++++++++++++++++++++++++++
+ cmd/serve/s3/multipart.go      |  37 +++++++-
+ cmd/serve/s3/multipart_test.go | 165 +++++++++++++++++++++++++++++++-
  cmd/serve/s3/s3.go             |   5 +
- cmd/serve/s3/serve_s3.md       |  29 +++-
+ cmd/serve/s3/serve_s3.md       |  29 +++++-
  cmd/serve/s3/server.go         |   9 ++
- 7 files changed, 704 insertions(+), 25 deletions(-)
+ 7 files changed, 579 insertions(+), 25 deletions(-)
 
 diff --git a/cmd/serve/s3/backend.go b/cmd/serve/s3/backend.go
 index 0847eddbc..cc8408d4b 100644
@@ -532,7 +532,7 @@ index 1642a7275..15b9fcf4b 100644
 +	}, 10*time.Second, 10*time.Millisecond)
 +}
 diff --git a/cmd/serve/s3/multipart.go b/cmd/serve/s3/multipart.go
-index 02564c331..c9eb0b096 100644
+index 6e0665a04..02e5dc690 100644
 --- a/cmd/serve/s3/multipart.go
 +++ b/cmd/serve/s3/multipart.go
 @@ -64,6 +64,7 @@ type multipartUpload struct {
@@ -588,52 +588,7 @@ index 02564c331..c9eb0b096 100644
  // poison marks the upload as one which can never be completed, because the
  // stream holds data which can't be taken back, then gives up the sink as
  // stopStreaming does.
-@@ -880,6 +909,33 @@ func (up *multipartUpload) pump() error {
- 	}
- }
- 
-+// waitPumped waits until no request is writing to the sink, so the parts
-+// already accepted have all been streamed before the upload is completed.
-+//
-+// Parts which were buffered are streamed in the background after the
-+// client has had replies for them, so they can still be being streamed
-+// when it completes the upload. As in waitForTurn, ErrSlowDown is
-+// returned if the sink isn't released within multipartWaitTimeout.
-+func (up *multipartUpload) waitPumped(ctx context.Context) error {
-+	timer := time.NewTimer(multipartWaitTimeout)
-+	defer timer.Stop()
-+	up.mu.Lock()
-+	for up.pumping && !up.closed {
-+		changed := up.changed
-+		up.mu.Unlock()
-+		select {
-+		case <-changed:
-+		case <-ctx.Done():
-+			return ctx.Err()
-+		case <-timer.C:
-+			return gofakes3.ErrSlowDown
-+		}
-+		up.mu.Lock()
-+	}
-+	up.mu.Unlock()
-+	return nil
-+}
-+
- // pipePart writes the whole of rw into w (the sink).
- func pipePart(w io.Writer, rw *pool.RW) error {
- 	if _, err := rw.Seek(0, io.SeekStart); err != nil {
-@@ -903,6 +959,10 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
- 	}
- 	defer up.endActivity()
- 
-+	if err := up.waitPumped(ctx); err != nil {
-+		return "", "", err
-+	}
-+
- 	// A completion which fails before the commit leaves the upload as
- 	// it was, so the client can upload any missing parts and retry it,
- 	// as on S3. gofakes3 keeps its record of the upload too.
-@@ -944,9 +1004,9 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
+@@ -946,9 +975,9 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
  		etagHash = up.objectMD5.Sum(nil)
  	}
  	_ = up.tenant.storeObjectMeta(up.vfs, up.fp, objectMeta{
@@ -646,7 +601,7 @@ index 02564c331..c9eb0b096 100644
  	})
  	if etagHash == nil {
  		// The upload is complete, so isn't failed if the object can't be read
-@@ -1151,7 +1211,7 @@ func (up *multipartUpload) close() error {
+@@ -1172,7 +1201,7 @@ func (up *multipartUpload) close(ctx context.Context) error {
  		}
  		return nil
  	}
@@ -656,10 +611,10 @@ index 02564c331..c9eb0b096 100644
  		return gofakes3.ErrInvalidPart
  	}
 diff --git a/cmd/serve/s3/multipart_test.go b/cmd/serve/s3/multipart_test.go
-index bc29be869..802f93d54 100644
+index d8f7826a3..b40e0df3c 100644
 --- a/cmd/serve/s3/multipart_test.go
 +++ b/cmd/serve/s3/multipart_test.go
-@@ -1661,17 +1661,272 @@ func TestMultipartPumpFailure(t *testing.T) {
+@@ -1817,17 +1817,178 @@ func TestMultipartPumpFailure(t *testing.T) {
  	up.fh = &flakySink{failAt: len(part1) + len(part2)/2}
  
  	// Part 2 arrives first so is buffered, then fails part way into the
@@ -677,10 +632,10 @@ index bc29be869..802f93d54 100644
  	require.ErrorIs(t, err, gofakes3.ErrNoSuchUpload)
  }
  
-+// gatedSink passes writes to the WriteCloser, holding any which would
++// heldSink passes writes to the WriteCloser, holding any which would
 +// take it past open bytes until gate is closed, and closes blocked when
 +// it first holds one. A held write then fails with err if it is set.
-+type gatedSink struct {
++type heldSink struct {
 +	io.WriteCloser
 +	open    int
 +	written int
@@ -690,7 +645,7 @@ index bc29be869..802f93d54 100644
 +	once    sync.Once
 +}
 +
-+func (s *gatedSink) Write(p []byte) (int, error) {
++func (s *heldSink) Write(p []byte) (int, error) {
 +	if s.written+len(p) > s.open {
 +		s.once.Do(func() { close(s.blocked) })
 +		<-s.gate
@@ -702,7 +657,7 @@ index bc29be869..802f93d54 100644
 +	return s.WriteCloser.Write(p)
 +}
 +
-+func (s *gatedSink) CloseWithError(err error) error {
++func (s *heldSink) CloseWithError(err error) error {
 +	return s.WriteCloser.(interface{ CloseWithError(error) error }).CloseWithError(err)
 +}
 +
@@ -715,72 +670,16 @@ index bc29be869..802f93d54 100644
 +	}, 10*time.Second, time.Millisecond)
 +}
 +
-+// TestMultipartCompleteWaitsForPump checks that a completion which arrives
-+// while buffered parts are still being streamed waits for them, as happens
-+// when the client gave up on the request streaming them and its resend of
-+// that request's part was accepted as already streamed.
-+func TestMultipartCompleteWaitsForPump(t *testing.T) {
-+	b, f, bucket := newPutTestBackend(t, "", nil)
-+	ctx := context.Background()
-+	const object = "complete-pumping.bin"
-+
-+	uploadID, err := b.CreateMultipartUpload(ctx, bucket, object, nil)
-+	require.NoError(t, err)
-+	up, err := b.loadUpload(ctx, uploadID)
-+	require.NoError(t, err)
-+	part1 := []byte(random.String(1024))
-+	part2 := []byte(random.String(1024))
-+	fh, err := up.vfs.Create(up.streamFp)
-+	require.NoError(t, err)
-+	sink := &gatedSink{WriteCloser: fh, open: len(part1), gate: make(chan struct{}), blocked: make(chan struct{})}
-+	up.fh = sink
-+	openGate := sync.OnceFunc(func() { close(sink.gate) })
-+	t.Cleanup(openGate)
-+
-+	// Part 2 is buffered, so it is streamed after part 1, and part 1 is
-+	// sent again as a client which gave up waiting for it would.
-+	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
-+	require.NoError(t, err)
-+	part1Done := make(chan error, 1)
-+	go func() {
-+		_, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
-+		part1Done <- err
-+	}()
-+	<-sink.blocked
-+
-+	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
-+	require.NoError(t, err)
-+	completeDone := make(chan error, 1)
-+	go func() {
-+		input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
-+			{PartNumber: 1, ETag: etag1},
-+			{PartNumber: 2, ETag: etag2},
-+		}}
-+		_, _, err := b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
-+		completeDone <- err
-+	}()
-+	select {
-+	case err := <-completeDone:
-+		t.Fatalf("completion didn't wait for the buffered part to be streamed (err=%v)", err)
-+	case <-time.After(100 * time.Millisecond):
-+	}
-+
-+	openGate()
-+	require.NoError(t, <-part1Done)
-+	require.NoError(t, <-completeDone)
-+	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
-+}
-+
-+// newGatedSinkUpload starts a multipart upload on b whose sink holds
++// newHeldSinkUpload starts a multipart upload on b whose sink holds
 +// writes past the first open bytes until the returned gate is opened.
-+func newGatedSinkUpload(t *testing.T, b *s3Backend, bucket, object string, open int) (gofakes3.UploadID, *gatedSink, func()) {
++func newHeldSinkUpload(t *testing.T, b *s3Backend, bucket, object string, open int) (gofakes3.UploadID, *heldSink, func()) {
 +	uploadID, err := b.CreateMultipartUpload(context.Background(), bucket, object, nil)
 +	require.NoError(t, err)
 +	up, err := b.loadUpload(context.Background(), uploadID)
 +	require.NoError(t, err)
 +	fh, err := up.vfs.Create(up.streamFp)
 +	require.NoError(t, err)
-+	sink := &gatedSink{WriteCloser: fh, open: open, gate: make(chan struct{}), blocked: make(chan struct{})}
++	sink := &heldSink{WriteCloser: fh, open: open, gate: make(chan struct{}), blocked: make(chan struct{})}
 +	up.fh = sink
 +	openGate := sync.OnceFunc(func() { close(sink.gate) })
 +	t.Cleanup(openGate)
@@ -797,7 +696,7 @@ index bc29be869..802f93d54 100644
 +	const object = "not-held.bin"
 +	part1 := []byte(random.String(1024))
 +	part2 := []byte(random.String(1024))
-+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++	uploadID, sink, openGate := newHeldSinkUpload(t, b, bucket, object, len(part1))
 +
 +	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
 +	require.NoError(t, err)
@@ -835,7 +734,7 @@ index bc29be869..802f93d54 100644
 +	const object = "pump-failure-complete.bin"
 +	part1 := []byte(random.String(1024))
 +	part2 := []byte(random.String(1024))
-+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++	uploadID, sink, openGate := newHeldSinkUpload(t, b, bucket, object, len(part1))
 +	up, err := b.loadUpload(ctx, uploadID)
 +	require.NoError(t, err)
 +
@@ -864,44 +763,6 @@ index bc29be869..802f93d54 100644
 +	assert.ErrorIs(t, err, fs.ErrorObjectNotFound)
 +}
 +
-+// TestMultipartCompleteWaitForPumpEnds checks that a completion waiting
-+// for buffered parts to be streamed gives up with ErrSlowDown after
-+// multipartWaitTimeout, or when its request is cancelled, leaving the
-+// upload to be completed later.
-+func TestMultipartCompleteWaitForPumpEnds(t *testing.T) {
-+	oldTimeout := multipartWaitTimeout
-+	multipartWaitTimeout = 100 * time.Millisecond
-+	t.Cleanup(func() { multipartWaitTimeout = oldTimeout })
-+	b, f, bucket := newPutTestBackend(t, "", nil)
-+	ctx := context.Background()
-+	const object = "complete-wait-ends.bin"
-+	part1 := []byte(random.String(1024))
-+	part2 := []byte(random.String(1024))
-+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
-+
-+	etag2, err := b.UploadPart(ctx, bucket, object, uploadID, 2, int64(len(part2)), bytes.NewReader(part2))
-+	require.NoError(t, err)
-+	etag1, err := b.UploadPart(ctx, bucket, object, uploadID, 1, int64(len(part1)), bytes.NewReader(part1))
-+	require.NoError(t, err)
-+	<-sink.blocked
-+	input := &gofakes3.CompleteMultipartUploadRequest{Parts: []gofakes3.CompletedPart{
-+		{PartNumber: 1, ETag: etag1},
-+		{PartNumber: 2, ETag: etag2},
-+	}}
-+
-+	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
-+	assert.ErrorIs(t, err, gofakes3.ErrSlowDown)
-+	cancelled, cancel := context.WithCancel(ctx)
-+	cancel()
-+	_, _, err = b.CompleteMultipartUpload(cancelled, bucket, object, uploadID, input)
-+	assert.ErrorIs(t, err, context.Canceled)
-+
-+	openGate()
-+	_, _, err = b.CompleteMultipartUpload(ctx, bucket, object, uploadID, input)
-+	require.NoError(t, err)
-+	assert.Equal(t, append(part1, part2...), readObject(t, f, bucket, object))
-+}
-+
 +// TestMultipartForgetWhilePumping checks that uploads can be torn down,
 +// as on shutdown, while buffered parts are being streamed in the
 +// background, leaving nothing behind.
@@ -911,7 +772,7 @@ index bc29be869..802f93d54 100644
 +	const object = "forget-pumping.bin"
 +	part1 := []byte(random.String(1024))
 +	part2 := []byte(random.String(1024))
-+	uploadID, sink, openGate := newGatedSinkUpload(t, b, bucket, object, len(part1))
++	uploadID, sink, openGate := newHeldSinkUpload(t, b, bucket, object, len(part1))
 +	up, err := b.loadUpload(ctx, uploadID)
 +	require.NoError(t, err)
 +
@@ -1052,6 +913,3 @@ index 2204681cf..3fd7445f1 100644
  	err := w.server.Shutdown()
  	// Uploads in progress hold their VFS so must go first
  	w.backend.forgetAllUploads()
--- 
-2.53.0
-

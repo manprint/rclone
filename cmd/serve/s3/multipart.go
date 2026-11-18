@@ -909,33 +909,6 @@ func (up *multipartUpload) pump() error {
 	}
 }
 
-// waitPumped waits until no request is writing to the sink, so the parts
-// already accepted have all been streamed before the upload is completed.
-//
-// Parts which were buffered are streamed in the background after the
-// client has had replies for them, so they can still be being streamed
-// when it completes the upload. As in waitForTurn, ErrSlowDown is
-// returned if the sink isn't released within multipartWaitTimeout.
-func (up *multipartUpload) waitPumped(ctx context.Context) error {
-	timer := time.NewTimer(multipartWaitTimeout)
-	defer timer.Stop()
-	up.mu.Lock()
-	for up.pumping && !up.closed {
-		changed := up.changed
-		up.mu.Unlock()
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return gofakes3.ErrSlowDown
-		}
-		up.mu.Lock()
-	}
-	up.mu.Unlock()
-	return nil
-}
-
 // pipePart writes the whole of rw into w (the sink).
 func pipePart(w io.Writer, rw *pool.RW) error {
 	if _, err := rw.Seek(0, io.SeekStart); err != nil {
@@ -958,10 +931,6 @@ func (b *s3Backend) CompleteMultipartUpload(ctx context.Context, bucketName, obj
 		return "", "", err
 	}
 	defer up.endActivity()
-
-	if err := up.waitPumped(ctx); err != nil {
-		return "", "", err
-	}
 
 	// A completion which fails before the commit leaves the upload as
 	// it was, so the client can upload any missing parts and retry it,

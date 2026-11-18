@@ -5,7 +5,8 @@ Questo fork migliora `rclone serve s3` per l'uso su molte macchine con **1 GB di
 backup anche da **200 GB** con upload multipart.
 
 Le modifiche al codice sono nel backport `webui/backports/07-serve-s3-small-hosts.patch`. Tutti i comandi e i numeri qui sotto sono
-stati verificati con queste modifiche (dettagli in [Misure](#misure)).
+stati verificati con queste modifiche (dettagli in [Misure](#misure)). Il punto 2 della tabella è
+stato corretto a monte: il backport non lo porta più, vedi la riga.
 
 ---
 
@@ -14,7 +15,7 @@ stati verificati con queste modifiche (dettagli in [Misure](#misure)).
 | # | Problema trovato | Effetto prima | Fix | Commit |
 |---|---|---|---|---|
 | 1 | `HEAD`/`GET` ricalcolavano l'MD5 leggendo **tutto** l'oggetto, anche quando l'ETag era già noto dall'upload | ~18 s in più per ogni HEAD di un oggetto da 10 GiB su `local` (rclone fa HEAD dopo ogni upload) | Si usa l'ETag tenuto in memoria; si fa l'hash solo se non è noto | `eb8610b76` |
-| 2 | Upload multipart lunghi falliti con `InvalidPart`: se il client andava in timeout sulla richiesta che stava scrivendo le parti in buffer e la reinviava, la `Complete` arrivava prima che quelle parti fossero scritte | Backup da 200 GB con `--timeout 5m` di default potenzialmente **fallito alla fine** | `CompleteMultipartUpload` aspetta che le parti accettate siano scritte (`waitPumped`) | `35d272ce6` |
+| 2 | Upload multipart lunghi falliti con `InvalidPart`: se il client andava in timeout sulla richiesta che stava scrivendo le parti in buffer e la reinviava, la `Complete` arrivava prima che quelle parti fossero scritte | Backup da 200 GB con `--timeout 5m` di default potenzialmente **fallito alla fine** | Corretto a monte: `CompleteMultipartUpload` aspetta che le parti accettate siano scritte (`close(ctx)`), il backport non lo porta più | `65d4b73a4` (upstream) |
 | 3 | La richiesta di una parte restava aperta finché il server scriveva anche tutte le parti in buffer dopo di essa (potenzialmente per tutto l'upload) | Timeout lato client e reinvii inutili; latenza massima per parte pari al timeout (10 s nel test) | Le parti in buffer sono scritte **in background**: la risposta arriva appena la propria parte è scritta. Se la scrittura in background fallisce, l'upload viene annullato e nulla viene committato | `43beb7182` |
 | 4 | Le dimensioni delle parti di ogni oggetto multipart erano tenute come `[]int64` | Fino a 80 KiB per oggetto (10 000 parti), moltiplicati per `--metadata-max-objects` | Codifica run-length: un upload a parti uguali occupa pochi byte | `e567bde34` |
 | 5 | I file temporanei `.rclone_temp_*` lasciati da un crash/kill restavano per sempre | Spazio perso (anche centinaia di GB per un backup interrotto) | Nuova opzione `--temp-object-expiry`: all'avvio, in background, rimuove i temporanei più vecchi della soglia | `c6fa407cd` |
@@ -29,8 +30,6 @@ default `0` (disattivo).
 | Test | Cosa verifica |
 |---|---|
 | `TestStoredETagNotRehashed` | HEAD/GET dopo un multipart non rileggono l'oggetto |
-| `TestMultipartCompleteWaitsForPump` | La `Complete` aspetta le parti ancora in scrittura (scenario del bug 2) |
-| `TestMultipartCompleteWaitForPumpEnds` | Quell'attesa termina con `SlowDown` dopo il timeout o con la cancellazione della richiesta, e l'upload si completa dopo |
 | `TestMultipartPartNotHeldByPump` | La risposta di una parte non aspetta le parti in buffer dopo di essa |
 | `TestMultipartPumpFailure` | Un errore di scrittura in background annulla l'upload |
 | `TestMultipartPumpFailureNotCommitted` | Una `Complete` in attesa fallisce e **non** committa un oggetto troncato |

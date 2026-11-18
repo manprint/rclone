@@ -87,6 +87,12 @@ Il tag avvia build, test, immagini e release. `rclone version` mostra `rclone v1
 si chiamano come quelli upstream con quella versione (`rclone-v1.76.0-webui.1-linux-amd64.zip`, `.deb`,
 `.rpm`, …). Per una nuova release sullo stesso upstream si usa `-webui.2`.
 
+Quando `main` è già oltre la release upstream (per esempio `v1.77.0-DEV` prima che upstream taggi
+v1.77.0), un tag su `main` non passa il controllo della CI: si fa una release da un ramo stabile, come
+`v1.76-webui` per [`v1.76.0-webui.3`](https://github.com/manprint/rclone/releases/tag/v1.76.0-webui.3),
+partito dal tag `v1.76.0` con lo stato verde di `main` di quel momento e un commit che registra la
+release.
+
 Il job `release` parte solo se sono verdi tutti i job di build e test, quello Android e `webui`. Come
 upstream, che pubblica i binari dai job di build, non aspetta `lint`: il lint usa l'ultima versione di
 golangci-lint, che può segnalare nel codice di una release upstream meno recente problemi corretti dopo

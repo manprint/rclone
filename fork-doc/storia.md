@@ -298,3 +298,15 @@ successivi sono nel ledger dello [stato del piano](piano/001_plan-WebdavSuperUI/
 | `8ea53877e` | phase(0): close foundations and listing after full gates and review |
 | `20ae7a36b` | sub-phase(0.2): serve the superdufs page with the VFS directory listing |
 | `8cf3d0524` | sub-phase(0.1): webui scaffold, flags and vendored superdufs assets |
+
+## 19. Release `v1.76.0-webui.3`
+
+`main` è già a `v1.77.0-DEV`: ha unito `upstream/master` (55 commit dopo `v1.76.0`) e quindi `VERSION`
+vale `v1.77.0`, che upstream non ha ancora taggato. Il job `release` esige che `VERSION` sia un tag
+upstream esistente, quindi su `main` un tag del fork adesso fallirebbe il controllo.
+
+Il ramo `v1.76-webui` parte dal tag `v1.76.0` e prende lo stato di `main` prima di quel merge
+(`5206e1b30`, già taggato `v1.76.0-webui.2`, CI tutta verde): l'unico commit nuovo registra la release.
+Il tag `v1.76.0-webui.3` ripubblica quello stato (backport 01-11, `webui`, `docker-serve-webdav`,
+`fork-doc` aggiornato) sulla release upstream v1.76.0; le novità del merge v1.77.0-DEV restano su `main`
+e andranno nella prossima `v1.77.0-webui.1`.

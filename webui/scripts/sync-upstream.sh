@@ -100,7 +100,22 @@ webui/scripts/check-footprint.sh
 echo "sync-upstream: build"
 go build ./...
 echo "sync-upstream: tests"
-go test ./webui/... ./cmd/serve/webdav/ ./lib/http/...
+# The fork's own packages plus every package a backport touches: a backport
+# reworked on new upstream code can pass the footprint and still not compile
+# its tests.
+test_pkgs=(./webui/... ./cmd/serve/webdav/ ./lib/http/...)
+shopt -s nullglob
+for patch in webui/backports/*.patch; do
+	while IFS= read -r dir; do
+		if compgen -G "$dir/*.go" > /dev/null; then
+			test_pkgs+=("./$dir/")
+		fi
+	done < <(git apply --numstat "$patch" | cut -f3 | xargs -r -n1 dirname | sort -u)
+done
+shopt -u nullglob
+mapfile -t test_pkgs < <(printf '%s\n' "${test_pkgs[@]}" | sort -u)
+printf 'sync-upstream: go test %s\n' "${test_pkgs[*]}"
+go test "${test_pkgs[@]}"
 echo "sync-upstream: tests with the web UI off"
 # -count=1: the tests read RCLONE_WEBUI in init(), which the test cache does
 # not track, so a cached run would repeat the result with the UI on.

@@ -98,7 +98,9 @@ git push origin main                                                # quando lo 
 Lo script, che non fa mai push, esegue nell'ordine: `git fetch`, `git merge --no-edit upstream/master` con
 `rerere` acceso, `webui/scripts/gen-ci.py` (rigenera la [CI del fork](ci-e-release.md) e la committa se
 cambia) e poi i controlli `webui/scripts/check-footprint.sh` (confronto con il ramo appena unito),
-`go build ./...`, `go test ./webui/... ./cmd/serve/webdav/ ./lib/http/...` e
+`go build ./...`, `go test` dei package del fork (`./webui/...`, `./cmd/serve/webdav/`, `./lib/http/...`)
+e di ogni package toccato da un backport (ricavati da `webui/backports/*.patch`: `cmd/serve/s3`,
+`vfs`, `cmd/serve/sftp`, `cmd/serve/http`, `fs/chunkedreader`), e
 `RCLONE_WEBUI=false go test ./cmd/serve/webdav/`. Stampa `OK` solo se tutto passa. Se non esiste il
 remote `upstream` usa `origin`. Con `UPSTREAM_REMOTE` e `UPSTREAM_BRANCH` si scelgono un altro remote
 e un altro ramo, con `UPSTREAM_REF` un riferimento qualsiasi, per esempio il tag di una release
